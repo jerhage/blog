@@ -7,6 +7,8 @@ import sitemap from '@astrojs/sitemap';
 import svelte from '@astrojs/svelte';
 import { defineConfig } from 'astro/config';
 import { blockWrappers } from './src/lib/block-wrappers.ts';
+import { diagramBuildGuard } from './src/lib/diagram/build-guard.ts';
+import { diagramBlocks } from './src/lib/diagram/diagram-blocks.ts';
 import { headingAnchors } from './src/lib/heading-anchors.ts';
 
 const FONT_FOLDER = 'src/kandan/core/fonts';
@@ -35,9 +37,9 @@ function fontLicensesPublished() {
 export default defineConfig({
 	site: 'https://example.com',
 	markdown: {
-		processor: satteri({ hastPlugins: [headingAnchors(), blockWrappers()] }),
+		processor: satteri({ mdastPlugins: [diagramBlocks()], hastPlugins: [headingAnchors(), blockWrappers()] }),
 		shikiConfig: { theme: 'css-variables' },
 	},
-	integrations: [mdx(), sitemap(), svelte()],
+	integrations: [mdx(), sitemap(), svelte(), diagramBuildGuard()],
 	vite: { plugins: [fontLicensesPublished()] },
 });

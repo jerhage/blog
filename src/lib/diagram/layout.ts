@@ -67,6 +67,7 @@ function elkGraph(source: DiagramSource): ElkNode {
 			'elk.padding': `[top=${CANVAS_MARGIN},left=${CANVAS_MARGIN},bottom=${CANVAS_MARGIN},right=${CANVAS_MARGIN}]`,
 			'elk.spacing.nodeNode': String(NODE_GAP),
 			'elk.layered.spacing.nodeNodeBetweenLayers': String(LAYER_GAP),
+			'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
 			'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
 		},
 		children: source.members.map((member) =>
