@@ -1,10 +1,13 @@
 // @ts-check
 
 import { readFileSync, readdirSync } from 'node:fs';
+import { satteri } from '@astrojs/markdown-satteri';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import svelte from '@astrojs/svelte';
 import { defineConfig } from 'astro/config';
+import { blockWrappers } from './src/lib/block-wrappers.ts';
+import { headingAnchors } from './src/lib/heading-anchors.ts';
 
 const FONT_FOLDER = 'src/kandan/core/fonts';
 
@@ -31,6 +34,10 @@ function fontLicensesPublished() {
 
 export default defineConfig({
 	site: 'https://example.com',
+	markdown: {
+		processor: satteri({ hastPlugins: [headingAnchors(), blockWrappers()] }),
+		shikiConfig: { theme: 'css-variables' },
+	},
 	integrations: [mdx(), sitemap(), svelte()],
 	vite: { plugins: [fontLicensesPublished()] },
 });
