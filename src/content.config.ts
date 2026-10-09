@@ -2,14 +2,30 @@ import { defineCollection } from 'astro:content';
 import { glob } from 'astro/loaders';
 import { z } from 'astro/zod';
 
-const blog = defineCollection({
-	loader: glob({ base: './src/content/blog', pattern: '**/*.{md,mdx}' }),
-	schema: z.object({
+const TAG = /^[a-z0-9]+(-[a-z0-9]+)*$/u;
+
+const entrySchema = z
+	.object({
 		title: z.string(),
 		description: z.string(),
-		pubDate: z.coerce.date(),
-		updatedDate: z.coerce.date().optional(),
-	}),
-});
+		published: z.coerce.date(),
+		updated: z.coerce.date().optional(),
+		tags: z.array(z.string().regex(TAG)).default([]),
+		draft: z.boolean().default(false),
+	})
+	.strict();
 
-export const collections = { blog };
+function collectionOf(folder: string) {
+	return defineCollection({
+		loader: glob({ base: `./src/content/${folder}`, pattern: '*.{md,mdx}' }),
+		schema: entrySchema,
+	});
+}
+
+const collections = {
+	posts: collectionOf('posts'),
+	notes: collectionOf('notes'),
+	docs: collectionOf('docs'),
+};
+
+export { collections };

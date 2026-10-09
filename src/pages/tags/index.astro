@@ -1,0 +1,29 @@
+---
+import Badge from '../../kandan/components/Badge.svelte';
+import { SITE_TITLE } from '../../consts';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { listEveryEntry } from '../../lib/collections';
+import { groupByTag } from '../../lib/content';
+import { tagPath } from '../../lib/kinds';
+
+const groups = groupByTag((await listEveryEntry()).map(({ entry }) => entry));
+const tags = [...groups].sort(([a], [b]) => a.localeCompare(b));
+---
+
+<BaseLayout title={`Tags | ${SITE_TITLE}`} description="Every tag across posts, notes and docs.">
+	<section class="col prose">
+		<h1>Tags</h1>
+		{tags.length === 0 && <p class="text-muted">No tags yet.</p>}
+	</section>
+	<div class="row wrap gap-3">
+		{
+			tags.map(([tag, entries]) => (
+				<a href={tagPath(tag)} class="entry-tag-link">
+					<Badge>
+						{tag} ({entries.length})
+					</Badge>
+				</a>
+			))
+		}
+	</div>
+</BaseLayout>

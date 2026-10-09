@@ -1,0 +1,41 @@
+---
+import Card from '../kandan/components/Card.svelte';
+import type { CollectionEntry } from 'astro:content';
+import { entryPath, KIND_LABELS } from '../lib/kinds';
+import type { ContentKind } from '../lib/kinds';
+import FormattedDate from './FormattedDate.astro';
+import TagList from './TagList.astro';
+import '../styles/entry.css';
+
+interface Props {
+	kind: ContentKind;
+	entry: CollectionEntry<ContentKind>;
+	showKind?: boolean;
+}
+
+const { kind, entry, showKind = false } = Astro.props;
+const { title, description, published, updated, tags } = entry.data;
+---
+
+<Card heading="h2">
+	{showKind && <span slot="eyebrow">{KIND_LABELS[kind].singular}</span>}
+	<a slot="title" href={entryPath(kind, entry.id)} class="entry-title-link">{title}</a>
+	<span slot="description">{description}</span>
+	<div class="row wrap items-center gap-2 text-sm text-muted">
+		<FormattedDate date={published} />
+		{
+			updated && (
+				<span>
+					Updated <FormattedDate date={updated} />
+				</span>
+			)
+		}
+	</div>
+	{
+		tags.length > 0 && (
+			<Fragment slot="footer">
+				<TagList tags={tags} />
+			</Fragment>
+		)
+	}
+</Card>

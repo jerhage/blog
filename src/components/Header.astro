@@ -16,7 +16,7 @@ const { pathname } = Astro.url;
 <header class="surface border-b">
 	<div class="page-wrap">
 		<div class="row items-center justify-between wrap py-3">
-			<a href="/" class="display text-lg weight-semibold">{SITE_TITLE}</a>
+			<NavLink href="/" strong class="display text-lg">{SITE_TITLE}</NavLink>
 			<nav class="row items-center wrap gap-1" aria-label="Main">
 				{
 					SECTIONS.map(({ href, label }) => (

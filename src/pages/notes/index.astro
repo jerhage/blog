@@ -1,0 +1,17 @@
+---
+import EntryList from '../../components/EntryList.astro';
+import { SITE_TITLE } from '../../consts';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { listEntries } from '../../lib/collections';
+
+const entries = await listEntries('notes');
+const items = entries.map((entry) => ({ kind: 'notes' as const, entry }));
+---
+
+<BaseLayout title={`Notes | ${SITE_TITLE}`} description="Short notes.">
+	<section class="col prose">
+		<h1>Notes</h1>
+		<p class="text-lg text-muted">Short notes.</p>
+	</section>
+	{items.length > 0 ? <EntryList items={items} /> : <p class="text-muted">Nothing here yet.</p>}
+</BaseLayout>

@@ -1,0 +1,23 @@
+---
+import Badge from '../kandan/components/Badge.svelte';
+import { tagPath } from '../lib/kinds';
+import '../styles/entry.css';
+
+interface Props {
+	tags: readonly string[];
+}
+
+const { tags } = Astro.props;
+---
+
+{
+	tags.length > 0 && (
+		<div class="row wrap gap-2">
+			{tags.map((tag) => (
+				<a href={tagPath(tag)} class="entry-tag-link">
+					<Badge>{tag}</Badge>
+				</a>
+			))}
+		</div>
+	)
+}

@@ -1,0 +1,27 @@
+---
+import EntryList from '../../components/EntryList.astro';
+import { SITE_TITLE } from '../../consts';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { listEveryEntry } from '../../lib/collections';
+import { groupByTag, newestFirst } from '../../lib/content';
+
+export async function getStaticPaths() {
+	const listed = await listEveryEntry();
+	const groups = groupByTag(listed.map((item) => ({ id: `${item.kind}/${item.entry.id}`, data: item.entry.data, item })));
+	return [...groups].map(([tag, members]) => ({
+		params: { tag },
+		props: { items: newestFirst(members).map(({ item }) => item) },
+	}));
+}
+
+const { tag } = Astro.params;
+const { items } = Astro.props;
+---
+
+<BaseLayout title={`Tagged ${tag} | ${SITE_TITLE}`} description={`Everything tagged ${tag}.`}>
+	<section class="col prose">
+		<h1>Tagged {tag}</h1>
+		<p class="text-muted">Posts, notes and docs with this tag, newest first.</p>
+	</section>
+	<EntryList items={items} showKind />
+</BaseLayout>

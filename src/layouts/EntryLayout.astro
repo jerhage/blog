@@ -1,0 +1,101 @@
+---
+import { render } from 'astro:content';
+import type { CollectionEntry } from 'astro:content';
+import Breadcrumb from '../kandan/components/Breadcrumb.svelte';
+import Card from '../kandan/components/Card.svelte';
+import TableOfContents from '../kandan/components/TableOfContents.svelte';
+import type { ContentsEntry } from '../kandan/components/table-of-contents';
+import CopyCodeScript from '../components/CopyCodeScript.astro';
+import FormattedDate from '../components/FormattedDate.astro';
+import { mdxComponents } from '../components/mdx-components';
+import TagList from '../components/TagList.astro';
+import { SITE_TITLE } from '../consts';
+import type { Neighbours } from '../lib/content';
+import { entryPath, KIND_LABELS } from '../lib/kinds';
+import type { ContentKind } from '../lib/kinds';
+import BaseLayout from './BaseLayout.astro';
+import '../styles/entry.css';
+
+interface Props {
+	kind: ContentKind;
+	entry: CollectionEntry<ContentKind>;
+	around: Neighbours<CollectionEntry<ContentKind>>;
+}
+
+const { kind, entry, around } = Astro.props;
+const { title, description, published, updated, tags } = entry.data;
+const { Content, headings } = await render(entry);
+
+const contents: ContentsEntry[] = headings
+	.filter((heading) => heading.depth === 2 || heading.depth === 3)
+	.map((heading) => ({
+		id: heading.slug,
+		href: `#${heading.slug}`,
+		title: heading.text,
+		level: heading.depth === 2 ? 2 : 3,
+	}));
+
+const neighbourLinks = [
+	{ label: 'Previous', neighbour: around.previous },
+	{ label: 'Next', neighbour: around.next },
+].flatMap(({ label, neighbour }) => (neighbour === undefined ? [] : [{ label, neighbour }]));
+---
+
+<BaseLayout title={`${title} | ${SITE_TITLE}`} description={description}>
+	<header class="col prose">
+		<Breadcrumb
+			items={[
+				{ label: KIND_LABELS[kind].plural, href: KIND_LABELS[kind].path },
+				{ label: title },
+			]}
+		/>
+		<h1>{title}</h1>
+		<p class="text-lg text-muted">{description}</p>
+		<div class="row wrap items-center gap-3 text-sm text-muted">
+			<FormattedDate date={published} />
+			{
+				updated && (
+					<span>
+						Updated <FormattedDate date={updated} />
+					</span>
+				)
+			}
+		</div>
+		<TagList tags={tags} />
+	</header>
+	<div class="layout-sidebar layout-sidebar-end">
+		{
+			contents.length > 0 && (
+				<details class="entry-contents-narrow">
+					<summary>Contents</summary>
+					<TableOfContents entries={contents} />
+				</details>
+			)
+		}
+		<div class="layout-sidebar-content">
+			<div class="entry-body prose">
+				<Content components={mdxComponents} />
+			</div>
+			{
+				neighbourLinks.length > 0 && (
+					<nav class="grid-2" aria-label={`More ${KIND_LABELS[kind].plural.toLowerCase()}`}>
+						{neighbourLinks.map(({ label, neighbour }) => (
+							<Card href={entryPath(kind, neighbour.id)}>
+								<span slot="eyebrow">{label}</span>
+								<span slot="title">{neighbour.data.title}</span>
+							</Card>
+						))}
+					</nav>
+				)
+			}
+		</div>
+		{
+			contents.length > 0 && (
+				<aside class="layout-sidebar-aside entry-contents-aside">
+					<TableOfContents entries={contents} client:visible />
+				</aside>
+			)
+		}
+	</div>
+	<CopyCodeScript />
+</BaseLayout>

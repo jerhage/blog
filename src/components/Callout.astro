@@ -1,0 +1,14 @@
+---
+import Alert from '../kandan/components/Alert.svelte';
+
+interface Props {
+	tone?: 'info' | 'success' | 'warning' | 'danger';
+	title?: string;
+}
+
+const { tone = 'info', title } = Astro.props;
+---
+
+<Alert variant={tone} title={title}>
+	<slot />
+</Alert>

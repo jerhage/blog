@@ -1,0 +1,17 @@
+---
+import EntryLayout from '../../layouts/EntryLayout.astro';
+import { listEntries } from '../../lib/collections';
+import { neighbours } from '../../lib/content';
+
+export async function getStaticPaths() {
+	const entries = await listEntries('notes');
+	return entries.map((entry) => ({
+		params: { slug: entry.id },
+		props: { entry, around: neighbours(entries, entry.id) },
+	}));
+}
+
+const { entry, around } = Astro.props;
+---
+
+<EntryLayout kind="notes" entry={entry} around={around} />

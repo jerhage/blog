@@ -1,0 +1,22 @@
+---
+import KandanFigure from '../kandan/components/Figure.svelte';
+
+interface Props {
+	caption?: string;
+}
+
+const { caption } = Astro.props;
+---
+
+{
+	caption === undefined ? (
+		<KandanFigure>
+			<slot />
+		</KandanFigure>
+	) : (
+		<KandanFigure>
+			<slot />
+			<span slot="caption">{caption}</span>
+		</KandanFigure>
+	)
+}

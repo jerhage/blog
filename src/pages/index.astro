@@ -1,11 +1,17 @@
 ---
-import { getCollection } from 'astro:content';
+import EntryList from '../components/EntryList.astro';
 import { SITE_DESCRIPTION, SITE_TITLE } from '../consts';
 import BaseLayout from '../layouts/BaseLayout.astro';
+import { listEntries } from '../lib/collections';
+import { recentlyChanged } from '../lib/content';
 
-const posts = (await getCollection('blog')).sort(
-	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
-);
+const LISTED = 5;
+
+const posts = (await listEntries('posts')).slice(0, LISTED);
+const changed = recentlyChanged([
+	...(await listEntries('notes')).map((entry) => ({ kind: 'notes' as const, entry, id: entry.id, data: entry.data })),
+	...(await listEntries('docs')).map((entry) => ({ kind: 'docs' as const, entry, id: entry.id, data: entry.data })),
+]).slice(0, LISTED);
 ---
 
 <BaseLayout title={SITE_TITLE} description={SITE_DESCRIPTION}>
@@ -20,13 +26,15 @@ const posts = (await getCollection('blog')).sort(
 		posts.length > 0 && (
 			<section class="col">
 				<h2>Latest posts</h2>
-				<ul class="col">
-					{posts.slice(0, 5).map((post) => (
-						<li>
-							<a href={`/posts/${post.id}/`}>{post.data.title}</a>
-						</li>
-					))}
-				</ul>
+				<EntryList items={posts.map((entry) => ({ kind: 'posts', entry }))} />
+			</section>
+		)
+	}
+	{
+		changed.length > 0 && (
+			<section class="col">
+				<h2>Recently updated notes and docs</h2>
+				<EntryList items={changed} showKind />
 			</section>
 		)
 	}

@@ -1,0 +1,15 @@
+---
+import type { ListedEntry } from '../lib/collections';
+import EntryCard from './EntryCard.astro';
+
+interface Props {
+	items: readonly ListedEntry[];
+	showKind?: boolean;
+}
+
+const { items, showKind = false } = Astro.props;
+---
+
+<div class="col">
+	{items.map(({ kind, entry }) => <EntryCard kind={kind} entry={entry} showKind={showKind} />)}
+</div>
