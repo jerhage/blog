@@ -1,0 +1,359 @@
+---
+title: "Unicode and Korean text"
+description: How Hangul syllables are computed from jamo, why one syllable has two spellings, and what that means for search, particles, line breaks and sorting, with live demos and the es-hangul and Hangul.js libraries.
+published: 2026-10-10
+tags:
+  - unicode
+  - korean
+  - typescript
+---
+
+import HangulSyllableDemo from '../../demos/HangulSyllableDemo.svelte';
+import ChoseongSearchDemo from '../../demos/ChoseongSearchDemo.svelte';
+import ParticleDemo from '../../demos/ParticleDemo.svelte';
+import LineBreakDemo from '../../demos/LineBreakDemo.svelte';
+import Diagram from '../../kandan/components/Diagram.svelte';
+import { HANGUL_SYLLABLE } from '../../diagrams/unicode-hangul';
+
+Part 2 of [Unicode and Japanese text](/posts/unicode-and-japanese-text/). That post covers what a Korean string shares with a Japanese one: [code points, code units and graphemes](/posts/unicode-and-japanese-text/#characters-code-points-and-code-units), [UTF-8 and UTF-16](/posts/unicode-and-japanese-text/#utf-8-and-utf-16), [JavaScript strings](/posts/unicode-and-japanese-text/#javascript-strings-are-utf-16) and [the four normalization forms](/posts/unicode-and-japanese-text/#the-four-normalization-forms). This one covers what is particular to Korean: syllables that are computed, two spellings of every syllable, initial-consonant search, spaces with attached particles, line breaks and sorting. The examples are TypeScript and every output was produced in Node 24 (ICU 78, Unicode 17).
+
+## Hangul syllables are computed
+
+Hangul is an alphabet written in blocks. Unicode encodes the blocks themselves: 11,172 composed syllables from `U+AC00` (<span lang="ko">가</span>) to `U+D7A3` (<span lang="ko">힣</span>), placed by arithmetic instead of by a table. Every syllable is an _initial_ consonant (choseong), a _medial_ vowel (jungseong) and an optional _final_ consonant (jongseong).
+
+| Part | Choices | Count |
+| --- | --- | --- |
+| Initial | <span lang="ko">ㄱ ㄲ ㄴ ㄷ ㄸ ㄹ ㅁ ㅂ ㅃ ㅅ ㅆ ㅇ ㅈ ㅉ ㅊ ㅋ ㅌ ㅍ ㅎ</span> | 19 |
+| Medial | <span lang="ko">ㅏ ㅐ ㅑ ㅒ ㅓ ㅔ ㅕ ㅖ ㅗ ㅘ ㅙ ㅚ ㅛ ㅜ ㅝ ㅞ ㅟ ㅠ ㅡ ㅢ ㅣ</span> | 21 |
+| Final | none, then <span lang="ko">ㄱ ㄲ ㄳ ㄴ ㄵ ㄶ ㄷ ㄹ ㄺ ㄻ ㄼ ㄽ ㄾ ㄿ ㅀ ㅁ ㅂ ㅄ ㅅ ㅆ ㅇ ㅈ ㅊ ㅋ ㅌ ㅍ ㅎ</span> | 28 |
+
+19 × 21 × 28 is 11,172. The code point of a syllable is its three indices put through one formula:
+
+```
+code point = 0xAC00 + (initial × 21 + medial) × 28 + final
+```
+
+<div class="diagram-block">
+  <Diagram {...HANGUL_SYLLABLE} scrollLabel="Hangul syllable diagram" />
+</div>
+
+For <span lang="ko">한</span>, the initial <span lang="ko">ㅎ</span> is index 18, the medial <span lang="ko">ㅏ</span> is 0 and the final <span lang="ko">ㄴ</span> is 4:
+
+```ts
+0xac00 + (18 * 21 + 0) * 28 + 4;   // 54620, which is 0xD55C
+
+const offset = 0xd55c - 0xac00;    // 10588
+Math.floor(offset / (21 * 28));    // 18, the initial ㅎ
+Math.floor(offset / 28) % 21;      // 0, the medial ㅏ
+offset % 28;                       // 4, the final ㄴ
+```
+
+A few syllables show the corners. A syllable that begins with a vowel has the silent initial <span lang="ko">ㅇ</span>, index 11, so <span lang="ko">이</span> is not "no initial". A final or a medial can be a cluster: <span lang="ko">ㅄ</span>, <span lang="ko">ㄺ</span> and <span lang="ko">ㅙ</span> are each one index. The consonants <span lang="ko">ㄸ ㅃ ㅉ</span> start a syllable and never end one.
+
+| Syllable | Code point | Initial | Medial | Final |
+| --- | --- | --- | --- | --- |
+| <span lang="ko">한</span> | `U+D55C` | <span lang="ko">ㅎ</span> 18 | <span lang="ko">ㅏ</span> 0 | <span lang="ko">ㄴ</span> 4 |
+| <span lang="ko">글</span> | `U+AE00` | <span lang="ko">ㄱ</span> 0 | <span lang="ko">ㅡ</span> 18 | <span lang="ko">ㄹ</span> 8 |
+| <span lang="ko">값</span> | `U+AC12` | <span lang="ko">ㄱ</span> 0 | <span lang="ko">ㅏ</span> 0 | <span lang="ko">ㅄ</span> 18 |
+| <span lang="ko">닭</span> | `U+B2ED` | <span lang="ko">ㄷ</span> 3 | <span lang="ko">ㅏ</span> 0 | <span lang="ko">ㄺ</span> 9 |
+| <span lang="ko">왜</span> | `U+C65C` | <span lang="ko">ㅇ</span> 11 | <span lang="ko">ㅙ</span> 10 | none, 0 |
+
+Type some text to split each syllable, or pick the three jamo yourself:
+
+<HangulSyllableDemo client:visible />
+
+## Two spellings of one syllable
+
+Unicode also encodes the jamo as separate _conjoining_ code points, in the Hangul Jamo block: initials from `U+1100`, medials from `U+1161` and finals from `U+11A8`. The same formula's three parts, written as three code points, spell the same syllable. NFC composes them into the one syllable code point and NFD splits a syllable back:
+
+```ts
+const han = '한';
+
+han.length;                                // 1
+han.normalize('NFD').length;               // 3
+[...han.normalize('NFD')]
+  .map((c) => c.codePointAt(0)?.toString(16));   // ['1112', '1161', '11ab']
+han.normalize('NFD').normalize('NFC') === han;  // true
+```
+
+The two spellings are the same grapheme and look the same, and they differ in size:
+
+| Form | Code points | UTF-16 units | UTF-8 bytes |
+| --- | --- | --- | --- |
+| NFC <span lang="ko">한</span> | `U+D55C` | 1 | `ED 95 9C` |
+| NFD <span lang="ko">한</span> | `U+1112 U+1161 U+11AB` | 3 | `E1 84 92 E1 85 A1 E1 86 AB` |
+
+Segmenting by grapheme treats a decomposed syllable as one character: `Intl.Segmenter('ko', { granularity: 'grapheme' })` over the NFD form of <span lang="ko">한글</span> returns two clusters of three units each. `length` still returns 6.
+
+This matters because decomposed text arrives by itself. File names read from a Mac can come through decomposed, as [NFC where a file name enters the app](/posts/unicode-and-japanese-text/#nfc-where-a-file-name-enters-the-app) describes for a Korean folder name. Compared with the composed text a keyboard types, a decomposed name differs in `===`, in `includes` and in length:
+
+```ts
+const fromMac = '고양이.png'.normalize('NFD');
+
+fromMac === '고양이.png';                   // false
+fromMac.includes('고양이');                 // false
+fromMac.normalize('NFC') === '고양이.png';  // true
+
+'고양이'.length;                            // 3
+'고양이'.normalize('NFD').length;           // 7
+```
+
+A search or a comparison that normalizes both sides to the same form works, and NFC is the form to store: it only chooses between canonically equivalent spellings.
+
+## Compatibility jamo and conjoining jamo
+
+A third block holds the letters as a keyboard types them. A lone <span lang="ko">ㄱ</span> is not the conjoining initial <span lang="ko">ᄀ</span>; it is a compatibility jamo, `U+3131`, in the Hangul Compatibility Jamo block, meant for a letter shown on its own. Typing <span lang="ko">ㄱㅇㅇ</span> into a search box produces `U+3131 U+3147 U+3147`.
+
+| Character | Code point | NFC and NFD | NFKC and NFKD |
+| --- | --- | --- | --- |
+| <span lang="ko">ㄱ</span> | `U+3131` | unchanged | `U+1100` <span lang="ko">ᄀ</span> |
+| <span lang="ko">ᄀ</span> | `U+1100` | unchanged | unchanged |
+| <span lang="ko">ᆨ</span> | `U+11A8` | unchanged | unchanged |
+| <span lang="ko">ㅏ</span> | `U+314F` | unchanged | `U+1161` <span lang="ko">ᅡ</span> |
+| <span lang="ko">ㄳ</span> | `U+3133` | unchanged | `U+11AA` <span lang="ko">ᆪ</span> |
+| <span lang="ko">ㅚ</span> | `U+315A` | unchanged | `U+116C` <span lang="ko">ᅬ</span> |
+
+The canonical forms leave compatibility jamo alone, since they are separate characters, and the compatibility forms map them to conjoining jamo. A consonant maps to its initial form when it has one, and <span lang="ko">ㄳ</span>, which cannot start a syllable, to a final. That is why NFKC does not rebuild a syllable from typed letters:
+
+```ts
+'ㄱㅏ'.normalize('NFKC') === '가';        // true
+
+'ㅎㅏㄴ'.normalize('NFKC');               // '하ᄂ': U+D558 U+1102
+'ㅎㅏㄴ'.normalize('NFKC') === '한';      // false
+'ㅎㅏㄴ'.normalize('NFC').length;         // 3, nothing composes
+```
+
+The <span lang="ko">ㄴ</span> became the initial `U+1102`, which cannot be the final of <span lang="ko">하</span>. Other compatibility characters go the same way: half-width <span lang="ko">ﾡ</span> (`U+FFA1`) and the circled <span lang="ko">㉠</span> (`U+3260`) both become `U+1100`, and <span lang="ko">㈀</span> becomes `(` `U+1100` `)`. A search that folds with NFKC, as [the Japanese fold](/posts/unicode-and-japanese-text/#folding-for-search) does, therefore needs its own rule for jamo, and text that is stored never goes through NFKC.
+
+## Hanja and compatibility ideographs
+
+Korean also writes Chinese characters, Hanja. The block `U+F900` to `U+FAFF` holds _CJK compatibility ideographs_, code points that exist so text from older character sets could convert to Unicode and back. Each one has a canonical decomposition to a unified ideograph, so every normalization form, NFC included, replaces it:
+
+| Compatibility | Becomes | Character |
+| --- | --- | --- |
+| `U+F900` <span lang="ko">豈</span> | `U+8C48` | <span lang="ko">豈</span> |
+| `U+F902` <span lang="ko">車</span> | `U+8ECA` | <span lang="ko">車</span> |
+| `U+F907` <span lang="ko">龜</span> | `U+9F9C` | <span lang="ko">龜</span> |
+| `U+F914` <span lang="ko">樂</span> | `U+6A02` | <span lang="ko">樂</span> |
+| `U+F95C` <span lang="ko">樂</span> | `U+6A02` | <span lang="ko">樂</span> |
+| `U+F9BF` <span lang="ko">樂</span> | `U+6A02` | <span lang="ko">樂</span> |
+| `U+FA0E` <span lang="ko">﨎</span> | unchanged | a unified ideograph that sits in the block |
+
+Of the 512 code points in the block, 460 change under NFC. The three <span lang="ko">樂</span> rows show why the block exists: one character, three compatibility code points, all of which become `U+6A02`. They look alike on screen and are different strings:
+
+```ts
+const compatibility = '樂';
+const unified = '樂';
+
+compatibility === unified;                                      // false
+'a樂b'.includes(unified);                                   // false
+'a樂b'.normalize('NFC').includes(unified);                  // true
+new Intl.Collator('ko').compare(compatibility, unified);        // 0
+```
+
+Stored Hanja text is safe to compose with NFC like any other text, and the collator already treats the two as equal.
+
+## Searching by initial consonants
+
+Korean search boxes often accept the initial consonant of each syllable: <span lang="ko">ㄱㅇㅇ</span> finds <span lang="ko">고양이</span>. The initial of a syllable is the first of the three indices, so it comes straight from the formula in the first section: `Math.floor((codePoint - 0xac00) / (21 * 28))` indexes the list of 19 initials.
+
+| Word | Initials |
+| --- | --- |
+| <span lang="ko">라면</span> | <span lang="ko">ㄹㅁ</span> |
+| <span lang="ko">고양이</span> | <span lang="ko">ㄱㅇㅇ</span> |
+| <span lang="ko">까치</span> | <span lang="ko">ㄲㅊ</span> |
+| <span lang="ko">띄어 쓰기</span> | <span lang="ko">ㄸㅇ ㅆㄱ</span> |
+
+A doubled initial is its own letter, so <span lang="ko">ㄱㅊ</span> does not find <span lang="ko">까치</span>. The query is made of compatibility jamo, and the text is first composed with NFC, so a decomposed word gives the same initials. A query that is not all initials is a plain substring search, which is what lets a normal word like <span lang="ko">고양이</span> find <span lang="ko">고양이가</span>.
+
+<ChoseongSearchDemo client:visible />
+
+The badge says which rule matched: green for the substring, blue for the initials. The initials of a word also match from the middle, so <span lang="ko">ㅇㅇ</span> finds <span lang="ko">고양이</span> through <span lang="ko">양이</span>.
+
+## Spaces, eojeol and attached particles
+
+Korean separates words with spaces, which makes it the easy case compared with Japanese. A spaced unit, an _eojeol_, is a noun or verb with its particles and endings attached: <span lang="ko">고양이가</span> is <span lang="ko">고양이</span> and the subject particle <span lang="ko">가</span>. `split(' ')` returns eojeol, and so does the word segmenter:
+
+```ts
+const text = '고양이가 생선을 먹었다. 나는 서울에서 살아요.';
+
+text.split(' ');
+// ['고양이가', '생선을', '먹었다.', '나는', '서울에서', '살아요.']
+
+[...new Intl.Segmenter('ko', { granularity: 'word' }).segment(text)]
+  .filter((part) => part.isWordLike)
+  .map((part) => part.segment);
+// ['고양이가', '생선을', '먹었다', '나는', '서울에서', '살아요']
+```
+
+The segmenter drops the full stops and keeps each particle attached. For this sentence the `ja` and `en` locales return the same segments. Separating <span lang="ko">고양이</span> from <span lang="ko">가</span> takes a morphological analyzer, the separate and larger tool that [the Japanese post](/posts/unicode-and-japanese-text/#words-without-spaces) ends on.
+
+So a search for a word must match inside an eojeol, and an equality test against a whole eojeol fails:
+
+```ts
+'고양이가' === '고양이';             // false
+'고양이가'.includes('고양이');       // true
+'고양이를'.includes('고양이');       // true
+```
+
+Going the other way, building a sentence around a variable word needs the right particle, because the particle depends on whether the word's last syllable has a final consonant. The final index from the formula decides it: 0 means none, and 8 is <span lang="ko">ㄹ</span>, which takes <span lang="ko">로</span> instead of <span lang="ko">으로</span>.
+
+| Pair | After a vowel | After a consonant | After ㄹ |
+| --- | --- | --- | --- |
+| <span lang="ko">이/가</span> | <span lang="ko">가</span> | <span lang="ko">이</span> | <span lang="ko">이</span> |
+| <span lang="ko">을/를</span> | <span lang="ko">를</span> | <span lang="ko">을</span> | <span lang="ko">을</span> |
+| <span lang="ko">은/는</span> | <span lang="ko">는</span> | <span lang="ko">은</span> | <span lang="ko">은</span> |
+| <span lang="ko">와/과</span> | <span lang="ko">와</span> | <span lang="ko">과</span> | <span lang="ko">과</span> |
+| <span lang="ko">으로/로</span> | <span lang="ko">로</span> | <span lang="ko">으로</span> | <span lang="ko">로</span> |
+
+<ParticleDemo client:visible />
+
+## Where a Korean line may break
+
+Because Korean has spaces, a line can break at a space, and `word-break` decides whether it may also break inside an eojeol. With the default `word-break: normal`, a browser may break between any two Hangul syllables, so a word can be split across two lines. `word-break: keep-all` forbids breaks between Chinese, Japanese and Korean letters, so lines break at spaces and punctuation only.
+
+```css
+:lang(ko) {
+  word-break: keep-all;
+}
+```
+
+The rule applies to every CJK letter in the element, so scoping it to `:lang(ko)` keeps Japanese text, which has no spaces, breaking where it needs to. Edit the paragraph and watch both boxes:
+
+<LineBreakDemo client:visible />
+
+The boxes are narrow on purpose. Under `keep-all` a long eojeol that does not fit the width stays whole, which can leave a ragged right edge or an overflow in a very narrow column.
+
+## Sorting and glyph forms
+
+`sort()` orders by code unit. Composed syllables are laid out in jamo order, so syllables sort correctly by code unit, and everything else does not: a lone jamo comes from another block and Latin letters sort before all Hangul. `Intl.Collator('ko')` puts jamo among the syllables and Latin after Hangul:
+
+```ts
+const words = ['사과', '바나나', '가지', '나무', '딸기', 'ㄱ', 'ㅎ', 'a', 'B'];
+
+words.toSorted();
+// ['B', 'a', 'ㄱ', 'ㅎ', '가지', '나무', '딸기', '바나나', '사과']
+
+words.toSorted(new Intl.Collator('ko').compare);
+// ['ㄱ', '가지', '나무', '딸기', '바나나', '사과', 'ㅎ', 'a', 'B']
+```
+
+Where Latin goes depends on the locale's data, and the result belongs to this Node's ICU. Hanja sort among the syllables by their Korean readings, and numbers sort by value only when asked:
+
+```ts
+['韓', '國', '가', '한', '中'].toSorted(new Intl.Collator('ko').compare);
+// ['가', '國', '中', '한', '韓']
+
+['3화', '10화', '2화'].toSorted(new Intl.Collator('ko').compare);
+// ['10화', '2화', '3화']
+
+['3화', '10화', '2화'].toSorted(new Intl.Collator('ko', { numeric: true }).compare);
+// ['2화', '3화', '10화']
+```
+
+[Natural order for file names](/posts/unicode-and-japanese-text/#natural-order-for-file-names) uses the same `numeric` option.
+
+Hanja are Han characters, and Han characters are shared with Chinese and Japanese. Unicode encodes one code point for each, and the drawn shape follows the language of the element, so a Korean book's Hanja should carry `lang="ko"`, the same reason [the Japanese post gives](/posts/unicode-and-japanese-text/#one-code-point-several-glyph-styles). The same three code points drawn with four `lang` values:
+
+| Code point | `ja` | `ko` | `zh-Hans` | `zh-Hant` |
+| --- | --- | --- | --- | --- |
+| `U+76F4` | <span class="text-lg" lang="ja">直</span> | <span class="text-lg" lang="ko">直</span> | <span class="text-lg" lang="zh-Hans">直</span> | <span class="text-lg" lang="zh-Hant">直</span> |
+| `U+9AA8` | <span class="text-lg" lang="ja">骨</span> | <span class="text-lg" lang="ko">骨</span> | <span class="text-lg" lang="zh-Hans">骨</span> | <span class="text-lg" lang="zh-Hant">骨</span> |
+| `U+4EE4` | <span class="text-lg" lang="ja">令</span> | <span class="text-lg" lang="ko">令</span> | <span class="text-lg" lang="zh-Hans">令</span> | <span class="text-lg" lang="zh-Hant">令</span> |
+
+The differences depend on the fonts installed on the device, and some devices draw all four alike.
+
+## Libraries: es-hangul and Hangul.js
+
+Two JavaScript libraries cover the operations above. The examples were run from the published npm packages, es-hangul 2.4.0 and hangul-js 0.2.6, and the sources were read on GitHub. The demos on this page use small functions of their own that return the same results as the library calls below for these inputs: the initials, the syllable split and the particle.
+
+**es-hangul** ([toss/es-hangul](https://github.com/toss/es-hangul), npm `es-hangul`, MIT, by Toss) is a set of ES modules. Its README thanks the author of Hangul.js. It normalizes to NFD inside `getChoseong`, so composed and decomposed input give the same initials.
+
+```ts
+import { assemble, disassemble, disassembleToGroups, getChoseong, hasBatchim, josa } from 'es-hangul';
+
+getChoseong('라면');                                  // 'ㄹㅁ'
+getChoseong('띄어 쓰기');                             // 'ㄸㅇ ㅆㄱ'
+getChoseong('네이버123');                             // 'ㄴㅇㅂ'
+getChoseong('네이버123', { keepNonHangul: true });    // 'ㄴㅇㅂ123'
+getChoseong('고양이'.normalize('NFD'));               // 'ㄱㅇㅇ'
+
+disassemble('값');                                    // 'ㄱㅏㅂㅅ'
+disassemble('과');                                    // 'ㄱㅗㅏ'
+disassembleToGroups('한글');                          // [['ㅎ', 'ㅏ', 'ㄴ'], ['ㄱ', 'ㅡ', 'ㄹ']]
+assemble(['ㅎ', 'ㅏ', 'ㄴ', 'ㄱ', 'ㅡ', 'ㄹ']);       // '한글'
+assemble(['아버지가', ' ', '방ㅇ', 'ㅔ ', '들ㅇ', 'ㅓ갑니다']);
+// '아버지가 방에 들어갑니다'
+
+hasBatchim('값');                                     // true
+hasBatchim('고양이');                                 // false
+```
+
+`josa` returns the word with the particle attached, and `josa.pick` returns the particle alone. The README's example prints `'사과를 먹었습니다.'` from `josa(word, '을/를') + ' 먹었습니다.'`, and the source of `josa` returns `word + particle`:
+
+```ts
+josa('사과', '을/를');            // '사과를'
+josa('바나나', '이/가');          // '바나나가'
+josa('책', '이/가');              // '책이'
+josa.pick('사과', '을/를');       // '를'
+josa.pick('서울', '으로/로');     // '로'
+josa.pick('집', '으로/로');       // '으로'
+```
+
+It accepts 14 pairs, including `이/가`, `을/를`, `은/는`, `으로/로`, `와/과`, `이나/나` and `이에요/예요`. Its other exports include `romanize` (`romanize('한글')` is `'hangeul'`), `combineCharacter('ㅎ', 'ㅏ', 'ㄴ')` (`'한'`), `combineVowels('ㅗ', 'ㅏ')` (`'ㅘ'`), `removeLastCharacter('한글')` (`'한그'`), `canBeChoseong`, `getJongseong`, the keyboard converters `convertQwertyToHangul('gksrmf')` (`'한글'`) and `convertHangulToQwerty`, and number functions such as `numberToHangul`.
+
+**Hangul.js** ([e-/Hangul.js](https://github.com/e-/Hangul.js), npm `hangul-js`, MIT) is a CommonJS library that also loads as a global `Hangul` in a script tag. Its README carries a maintenance notice: the project is in a minimal-maintenance state, still working but no longer developed, and it points to es-hangul as the more actively maintained alternative. The npm package's latest version is 0.2.6, published in November 2019. It splits compound jamo and keeps doubled ones:
+
+```js
+Hangul.disassemble('가나다');     // ['ㄱ', 'ㅏ', 'ㄴ', 'ㅏ', 'ㄷ', 'ㅏ']
+Hangul.disassemble('값');         // ['ㄱ', 'ㅏ', 'ㅂ', 'ㅅ']
+Hangul.disassemble('ㄲ');         // ['ㄲ']
+Hangul.disassemble('ㄳ');         // ['ㄱ', 'ㅅ']
+Hangul.d('한글', true);           // [['ㅎ', 'ㅏ', 'ㄴ'], ['ㄱ', 'ㅡ', 'ㄹ']]
+
+Hangul.assemble(['ㅎ', 'ㅏ', 'ㄴ', 'ㄱ', 'ㅡ', 'ㄹ']);   // '한글'
+Hangul.assemble(['ㅗ', 'ㅐ']);                          // 'ㅙ'
+Hangul.a(Hangul.d('옽ㅏ'));                             // '오타'
+```
+
+What Hangul.js adds is search by typed keys. `Hangul.search(a, b)` is defined on the keys a two-set keyboard presses to type each string, so <span lang="ko">닭</span>, typed <span lang="ko">ㄷㅏㄹㄱ</span>, is found inside <span lang="ko">달걀</span>, typed <span lang="ko">ㄷㅏㄹㄱㅑㄹ</span>. The result is an index, or -1. It does not search by initials:
+
+```js
+Hangul.search('달걀', '닭');           // 0
+Hangul.search('달걀', '알');           // -1
+Hangul.search('도우미', '도움');       // 0
+Hangul.search('고양이', 'ㄱㅇㅇ');     // -1
+Hangul.search('달걀', 'ㄷㄱ');         // -1
+
+Hangul.rangeSearch('간장공장공장장', '공장');   // [[2, 3], [4, 5]]
+
+const searcher = new Hangul.Searcher('닭');
+searcher.search('달걀');               // 0
+searcher.search('달구지');             // 0
+searcher.search('달무리');             // -1
+```
+
+`rangeSearch` returns index ranges in the first string, which suits highlighting a match, and a `Searcher` disassembles its query once for many comparisons. Hangul.js does not normalize its input, so a decomposed string passes through as conjoining jamo and a search over it finds nothing:
+
+```js
+Hangul.d('한'.normalize('NFD'));                     // ['ᄒ', 'ᅡ', 'ᆫ'], U+1112 U+1161 U+11AB
+Hangul.search('고양이'.normalize('NFD'), '고양이');   // -1
+```
+
+| Operation | es-hangul | Hangul.js |
+| --- | --- | --- |
+| Initials of a word | `getChoseong` | none |
+| Particle for a word | `josa`, `josa.pick` | `endsWithConsonant` and `endsWith`, to choose it |
+| Split into jamo and combine | `disassemble`, `assemble` | `disassemble`, `assemble` |
+| Search by typed keys | none | `search`, `rangeSearch`, `Searcher` |
+| Last release | 2.4.0, repository active in 2026 | 0.2.6, 2019, minimal maintenance |
+
+## Rules for Korean text
+
+- Compose text with NFC where it enters from outside, a file name from a Mac included, and store it composed. Never store the result of NFKC.
+- Read a syllable's parts from the formula, not from a table: initial, medial and final indices fall out of `code point - 0xAC00`.
+- Treat a typed lone letter as a compatibility jamo, `U+3131` to `U+314E`, and an initial-consonant query as all initials.
+- Match a word inside an eojeol with a substring test, since particles stay attached.
+- Choose a particle from the final index of the last syllable, with ㄹ as the exception for <span lang="ko">으로/로</span>.
+- Set `word-break: keep-all` on Korean text only, and `lang="ko"` on every element that shows it.
+- Sort with `Intl.Collator('ko')`, with `numeric` for numbered titles.
