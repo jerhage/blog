@@ -1,0 +1,134 @@
+---
+title: "Composition at the page"
+description: A panel with a slot stays ignorant of the domains that fill it, so the page is the only place that knows them all.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - react
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with TanStack Query and ts-pattern.
+
+## The slot is a render prop
+
+The card details panel in `cards` takes a function that returns UI. It calls the function and draws the result. It never learns what comes back.
+
+```tsx
+type CardDetailsProps = {
+  card: Card;
+  extra: (card: Card) => ReactNode;
+};
+
+function CardDetails({ card, extra }: CardDetailsProps) {
+  return (
+    <article>
+      <CardFace card={card} />
+      {extra(card)}
+    </article>
+  );
+}
+```
+
+Notes, owned copies or tags can arrive later without a change to this file.
+
+## One panel, several domains
+
+The page queries nothing itself. It builds one component per domain and passes them in together.
+
+```tsx
+function CardPage({ card }: { card: Card }) {
+  const { notes, collection, tags } = useContainer();
+
+  return (
+    <CardDetails
+      card={card}
+      extra={(card) => (
+        <>
+          <CardNotesData notes={notes} cardId={card.id} />
+          <OwnedCopiesData collection={collection} cardId={card.id} />
+          <CardTagsData tags={tags} cardId={card.id} />
+        </>
+      )}
+    />
+  );
+}
+```
+
+```diagram
+title "One panel, three domains in its slot"
+direction down
+page "Card page" detail "knows every domain" tone warning
+panel "Card details panel" detail "cards UI, one slot" tone primary
+notes "Notes component" detail "notes UI" tone accent
+copies "Owned copies component" detail "collection UI" tone accent
+tags "Tags component" detail "tags UI" tone accent
+page -> panel "renders"
+page -> notes "builds"
+page -> copies "builds"
+page -> tags "builds"
+notes -> panel "fills the slot"
+copies -> panel "fills the slot"
+tags -> panel "fills the slot"
+```
+
+## What the slot keeps out
+
+Each filler is a data component that owns its read, so a slow or failed read stays inside its own corner of the panel.
+
+```tsx
+function CardNotesData({ notes, cardId }: CardNotesDataProps) {
+  const { state } = useReadState(cardNotesQuery(notes, cardId));
+
+  return match(state)
+    .with({ type: 'loading' }, () => <Spinner />)
+    .with({ type: 'failed' }, () => <ErrorState />)
+    .with({ type: 'success' }, ({ items }) => <NoteList notes={items} />)
+    .exhaustive();
+}
+```
+
+Without the slot, the panel would show notes by importing them. Notes already hold a card id, and would then import the card to show its name.
+
+```diagram
+title "The same two domains, without and with the slot"
+direction right
+group without "Without a slot" tone danger {
+  cardsA "cards" tone accent
+  notesA "notes" tone accent
+}
+group with "With a slot" tone success {
+  cardsB "cards" detail "leaf" tone primary
+  notesB "notes" detail "leaf" tone primary
+  pageB "Card page" tone warning
+}
+cardsA -> notesA "shows notes"
+notesA -> cardsA "needs the card"
+pageB -> cardsB "renders panel"
+pageB -> notesB "builds component"
+```
+
+The cycle on the left is the one the dependency checker rejects. On the right, both stay leaves and the page is the only importer of the two.
+
+## Four things happen in order
+
+```steps
+sequence
+title "Opening a card"
+participant page "Card page" tone primary
+participant panel "Card details panel"
+participant notes "Notes data component" tone accent
+participant usecase "Notes read"
+page -> panel "Render with the slot function"
+panel -> notes "Call the slot"
+notes -> usecase "Read the notes for this card id"
+usecase --> notes "Notes or a named failure"
+step "The page renders the panel and hands it a slot function." : 1
+step "The panel draws the card, then calls the slot." : 2
+step "The notes data component starts its own read and shows a spinner meanwhile." : 3
+step "The read resolves and the notes appear. The panel was never involved." : 4
+```
+
+## The other way to cross
+
+A callback crosses a domain edge too. A write in one domain takes an `onCardChanged` callback, and the page implements it by refreshing a read in another domain. A slot places UI. A callback passes an event.
