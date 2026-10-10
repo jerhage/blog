@@ -49,7 +49,7 @@ The VPN software on the laptop does not send the inner packet as it is. It encry
 title "A WireGuard transport message inside its outer packet"
 bits 32
 offsets 0 8 16 24
-row "Outer IP header" 32 detail "20 bytes: source is the client's public endpoint, destination is the hub" tone accent
+row "Outer IP header" 32 detail "20 bytes for IPv4: source is the client's public endpoint, destination is the hub" tone accent
 row "UDP source port" 16 tone accent | "UDP destination port" 16 tone accent
 row "UDP length" 16 tone accent | "UDP checksum" 16 tone accent
 row "Type: 4" 8 tone primary | "Reserved" 24 tone primary
@@ -60,11 +60,11 @@ row "Encrypted inner IP packet" 32 detail "Variable length, padded to a multiple
 row "Authentication tag" 32 detail "16 bytes" tone success
 ```
 
-The rows are not to scale: the outer header, the encrypted packet and the tag each take several 32-bit words and are drawn as one row.
+The rows are not to scale: the outer header, the encrypted packet and the tag each take several 32-bit words and are drawn as one row. The tag is the 16-byte Poly1305 authentication tag that follows the encrypted packet. The packet is zero-padded to a multiple of 16 bytes before it is encrypted. The receiver index is the number the receiving peer picked for itself during the handshake.
 
 ### What the hub does with it
 
-The hub receives the datagram on its UDP port. The receiver index in the WireGuard header tells it which session the message belongs to, and the session leads to a peer and its keys. The hub decrypts the payload and has the inner packet again.
+The hub receives the datagram on its UDP port. The receiver index in the WireGuard header is the number the hub chose for itself during the handshake, so it tells the hub which session the message belongs to, and the session leads to a peer and its keys. The hub decrypts the payload and has the inner packet again.
 
 From here the hub routes on the inner destination, not the outer one. If the destination is on the hub's internal network, the hub forwards the packet there. If it belongs to another client, the hub encrypts it again for that client and sends it to that client's current endpoint. If it is on the internet, the hub forwards it, usually after rewriting the source with NAT.
 
@@ -73,10 +73,10 @@ From here the hub routes on the inner destination, not the outer one. If the des
 The hub keeps state per peer, and the replies depend on it.
 
 1. **Which inner addresses belong to which peer.** WireGuard calls this cryptokey routing. Each peer has a list of allowed IP addresses. For an outgoing packet, the hub picks the peer whose list contains the destination. For an incoming packet, it accepts the packet only if the inner source is in the list of the peer that sent it.
-2. **Where the peer is right now.** The hub stores the outer address and port of the last authenticated packet from the peer. If the client moves to another network, its next valid packet updates the endpoint, and replies follow it.
+2. **Where the peer is right now.** The hub updates the peer's endpoint to the outer source address and port of the most recent correctly authenticated packet from that peer. If the client moves to another network, its next valid packet updates the endpoint, and replies follow it.
 3. **The NAT table, if the hub translates traffic to the internet.** The hub's connection-tracking table maps a reply to the inner client address. The routing rule in step 1 then picks the tunnel.
 
-The client's home router keeps a similar mapping, from the laptop's local port to a public port, and it only keeps it while traffic flows. A UDP mapping can expire after a short idle time. WireGuard sends nothing when it is idle, so a client behind NAT that wants to stay reachable sets `PersistentKeepalive`, which sends a small authenticated packet every few seconds.
+The client's home router keeps a similar mapping, from the laptop's local port to a public port, and it only keeps it while traffic flows. A UDP mapping expires after a period of idleness that varies by device. Tailscale's NAT traversal article gives 30 seconds as a common value. WireGuard sends nothing when it is idle, and `PersistentKeepalive` is off by default. A client behind NAT that wants to stay reachable sets it to send a small authenticated packet at a fixed interval. The `wg(8)` man page suggests 25 seconds for peers behind NAT.
 
 ## Following one request through the hub
 
@@ -99,7 +99,7 @@ hub --> router "Encrypted to the last endpoint"
 router --> laptop "Destination translated back"
 step "The laptop encrypts the inner packet (10.8.0.2 to 10.0.5.20) and wraps it in a UDP datagram addressed to the hub." : 1
 step "The home router rewrites the outer source to its own public address and port, and remembers the mapping." : 2
-step "The hub finds the peer from the receiver index, decrypts, and reads the inner destination, 10.0.5.20." : 3
+step "The hub finds the session from the receiver index, which it chose for itself, then decrypts, and reads the inner destination, 10.0.5.20." : 3
 step "The destination is on the internal network, so the hub forwards the inner packet there. For another client it would encrypt again for that peer." : 4
 step "The server answers. The reply is addressed to 10.8.0.2, the inner source of the request." : 5
 step "The hub looks up 10.8.0.2 in its table of allowed addresses. It belongs to the laptop's peer entry." : 6
@@ -121,7 +121,7 @@ group home "Home network" {
 group office "Office network" {
   server "Server" detail "100.101.0.9" tone primary
 }
-relay "DERP relay" detail "fallback only" tone warning
+relay "DERP relay" detail "forwards encrypted packets" tone warning
 coord -- laptop "control"
 coord -- server "control"
 laptop <-> server "direct WireGuard"
@@ -129,11 +129,11 @@ laptop <-> relay "encrypted"
 relay <-> server "encrypted"
 ```
 
-Every device gets a stable address from `100.64.0.0/10`, the range reserved for carrier-grade NAT, so it does not collide with ordinary home or office networks. Tailscale also gives each device a name through MagicDNS, so you reach `office-nas` rather than an address.
+Every device gets a stable IPv4 address from `100.64.0.0/10`, the range reserved for carrier-grade NAT, so it does not collide with ordinary home or office networks. It also gets an IPv6 address from the private prefix `fd7a:115c:a1e0::/48`. Tailscale also gives each device a name through MagicDNS, so you reach `office-nas` rather than an address.
 
 ### Joining and connecting
 
-A new device registers with the coordination server and receives the list of peers it may reach, with their public keys and endpoints. It then starts a WireGuard handshake with a peer.
+A new device registers with the coordination server and receives the list of peers it may reach, with their public keys and endpoints. Tailscale starts every connection over a DERP relay, so the device can send at once while it looks for a direct path.
 
 ```sequence
 title "A device joins and reaches a peer"
@@ -143,18 +143,18 @@ participant peer "Peer"
 participant relay "DERP relay"
 device -> control "Register: public key, endpoints"
 control --> device "Peers: keys, endpoints, policy"
-device -> peer "Handshake initiation"
-peer --> device "Handshake response"
-note device..peer "Direct path, both sides now share keys"
-device -> relay "Encrypted packets, if no direct path works"
+device -> relay "Handshake and first packets"
 relay -> peer "Forwarded unchanged"
+device -> peer "Probe the peer's endpoints"
+peer --> device "Reply on the direct path"
+note device..peer "Traffic moves to the direct path"
 ```
 
-Each device learns its own public endpoint with STUN-style queries: it asks a server on the internet which address and port the request came from. The coordination server passes these endpoints to the peers. Then both peers send to each other's endpoint at about the same time. Each NAT sees outgoing traffic first, so it lets the peer's packets in. Tailscale keeps the relay path running while it tries this, then moves to the direct path when one works.
+Each device learns its own public endpoint with STUN: it asks a server on the internet which address and port the request came from. Tailscale's DERP servers also answer STUN requests. The coordination server passes these endpoints to the peers. Then both peers send to each other's endpoint at about the same time. Each NAT sees outgoing traffic first, so it lets the peer's packets in. Tailscale calls the move from the relay to a direct path an upgrade, and the connection stays usable during it.
 
-Some NATs choose a different public port for every destination. A direct path through such a NAT often fails, and the relay stays in use. DERP relays forward the WireGuard packets without being able to read them, since the keys belong to the two devices.
+Some NATs choose a different public port for every destination, which Tailscale calls hard NAT. A direct path through such a NAT often fails, and the traffic stays on a relay. That relay is a DERP server, or a peer relay, which is another device in the same tailnet set up to forward traffic. DERP servers are reached over HTTPS. They forward the WireGuard packets without being able to read them, since the keys belong to the two devices.
 
-The handshake itself is one 148-byte message from the initiator.
+The first message of the WireGuard handshake, sent by the initiator, is 148 bytes.
 
 ```packet
 title "A WireGuard handshake initiation message"
@@ -176,8 +176,8 @@ Each device does the hub's job for its own peers: its peer table maps each peer'
 ```text
 $ tailscale status
 100.101.0.2   laptop      alice@  linux  -
-100.101.0.9   office-nas  alice@  linux  active; direct 203.0.113.7:41641
-100.101.0.11  phone       alice@  iOS    active; relay "fra"
+100.101.0.9   office-nas  alice@  linux  active; direct 203.0.113.7:41641, tx 1116 rx 1124
+100.101.0.11  phone       alice@  iOS    active; relay "fra", tx 1351 rx 4262
 
 $ tailscale ping office-nas
 pong from office-nas (100.101.0.9) via DERP(fra) in 38ms
@@ -185,7 +185,7 @@ pong from office-nas (100.101.0.9) via 203.0.113.7:41641 in 12ms
 ```
 
 <Callout tone="info" title="Control plane and data plane">
-  The coordination server is needed to add a device, change policy or rotate a key. Packets between devices that already have a path do not go through it.
+  Packets never go through the coordination server. If it goes down, devices keep their keys and cached policy, and existing connections keep working. Adding a device, changing policy and refreshing or revoking keys need it, and a device whose key expires without a refresh loses its connections.
 </Callout>
 
 ## Trade-offs
@@ -195,8 +195,16 @@ pong from office-nas (100.101.0.9) via 203.0.113.7:41641 in 12ms
 | Path between two clients | Always through the hub | Direct when NAT allows, relay otherwise |
 | Latency | Adds the detour to the hub | Close to the direct internet path |
 | Bandwidth limit | The hub's | Each device's own link |
-| Failure of the central part | Nothing works | New devices and changes wait; existing paths keep working |
+| Failure of the central part | Nothing works | New devices and changes wait; existing paths keep working until keys expire |
 | Traffic inspection and one exit point | Simple, one place | Needs policy on each device or a designated exit device |
 | Adding a device | Edit the hub | Register the device with the coordination server |
 
 Neither layout is better for every case. A hub is the simpler fit when all traffic must pass one inspection point or leave through one address. A mesh fits when devices mostly talk to each other and the hub would only add distance.
+
+## Which one to use
+
+Pick a hub when the network is small and mostly reaches one place: a branch office, a server room, a home lab. All traffic then passes one machine, so you can inspect it there or send it out through one address. You accept that the hub's link limits everyone and that its failure stops everyone.
+
+Pick a mesh when devices mostly talk to each other, when they roam between networks, or when the list of devices changes often. Each pair of devices uses its own direct path where NAT allows it and a relay where it does not. The coordination server only needs to be up when something changes.
+
+The two are not exclusive. A mesh device can act as an exit node or a subnet router, and then it plays the hub's part for the traffic that needs one.
