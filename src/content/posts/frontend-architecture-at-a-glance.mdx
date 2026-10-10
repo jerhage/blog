@@ -86,14 +86,14 @@ const ContainerContext = createContext(container);
 const useContainer = () => useContext(ContainerContext);
 ```
 
-A page is thin. It takes the container and puts domains side by side. The card details panel in `cards` knows nothing about notes. It offers a slot, a prop that is a function returning UI, and draws whatever it gets.
+A page is thin. It takes the container and puts domains side by side. The card details panel in `cards` knows nothing about notes. It offers a slot, a prop that takes any UI, and draws whatever it gets.
 
 ```tsx
-function CardDetails({ card, extra }: { card: Card; extra: (card: Card) => ReactNode }) {
+function CardDetails({ card, extra }: { card: Card; extra: ReactNode }) {
   return (
     <article>
       <CardFace card={card} />
-      {extra(card)}
+      {extra}
     </article>
   );
 }
@@ -105,12 +105,7 @@ The card page is the one place that knows both domains. It fills the slot with t
 function CardPage({ card }: { card: Card }) {
   const { notes } = useContainer();
 
-  return (
-    <CardDetails
-      card={card}
-      extra={(card) => <CardNotesData notes={notes} cardId={card.id} />}
-    />
-  );
+  return <CardDetails card={card} extra={<CardNotesData notes={notes} cardId={card.id} />} />;
 }
 ```
 

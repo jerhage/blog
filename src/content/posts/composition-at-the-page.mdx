@@ -10,21 +10,21 @@ tags:
 
 Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with TanStack Query and ts-pattern.
 
-## The slot is a render prop
+## The slot is a prop that takes UI
 
-The card details panel in `cards` takes a function that returns UI. It calls the function and draws the result. It never learns what comes back.
+The card details panel in `cards` takes any UI and draws it. It never learns what comes back.
 
 ```tsx
 type CardDetailsProps = {
   card: Card;
-  extra: (card: Card) => ReactNode;
+  extra: ReactNode;
 };
 
 function CardDetails({ card, extra }: CardDetailsProps) {
   return (
     <article>
       <CardFace card={card} />
-      {extra(card)}
+      {extra}
     </article>
   );
 }
@@ -43,17 +43,39 @@ function CardPage({ card }: { card: Card }) {
   return (
     <CardDetails
       card={card}
-      extra={(card) => (
+      extra={
         <>
           <CardNotesData notes={notes} cardId={card.id} />
           <OwnedCopiesData collection={collection} cardId={card.id} />
           <CardTagsData tags={tags} cardId={card.id} />
         </>
-      )}
+      }
     />
   );
 }
 ```
+
+## When the slot is a function
+
+Sometimes only the panel has what the slot needs. Here the page has only the card's slug from the address. The panel loads the card, then calls the slot with its id.
+
+```tsx
+type CardDetailsPaneProps = {
+  cards: CardUseCases;
+  slug: CardSlug;
+  notesFor: (cardId: CardId) => ReactNode;
+};
+
+function CardDetailsPane({ cards, slug, notesFor }: CardDetailsPaneProps) {
+  return (
+    <CardData cards={cards} slug={slug}>
+      {(card) => <CardDetails card={card} extra={notesFor(card.id)} />}
+    </CardData>
+  );
+}
+```
+
+The page passes `notesFor={(cardId) => <CardNotesData notes={notes} cardId={cardId} />}`. A plain node fits when the page has everything. A function fits when the value exists only inside the panel.
 
 ```diagram
 title "One panel, three domains in its slot"
@@ -119,12 +141,12 @@ participant page "Card page" tone primary
 participant panel "Card details panel"
 participant notes "Notes data component" tone accent
 participant usecase "Notes read"
-page -> panel "Render with the slot function"
-panel -> notes "Call the slot"
+page -> panel "Render with the notes in the slot"
+panel -> notes "Draw the slot"
 notes -> usecase "Read the notes for this card id"
 usecase --> notes "Notes or a named failure"
-step "The page renders the panel and hands it a slot function." : 1
-step "The panel draws the card, then calls the slot." : 2
+step "The page builds the notes component and puts it in the panel's slot." : 1
+step "The panel draws the card, then draws the slot." : 2
 step "The notes data component starts its own read and shows a spinner meanwhile." : 3
 step "The read resolves and the notes appear. The panel was never involved." : 4
 ```
