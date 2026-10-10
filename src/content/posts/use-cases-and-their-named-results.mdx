@@ -59,7 +59,7 @@ An expected outcome is one the caller can do something about: tell the person th
 | Storage blocked in a private window | a variant of the result |
 | A card row with no image, a bug, a broken store | thrown, caught at a boundary |
 
-One question sorts them: can the caller do something meaningful with it? If yes, it is a variant. If no, it throws to a boundary that logs it and shows a failure. A thrown error keeps its meaning of "something nobody planned for".
+One question sorts them: can the caller do something meaningful with it? If yes, it is a variant. If no, it throws to a boundary that logs it and shows a failure. A thrown error keeps its meaning of "something nobody planned for". [Expected and unexpected failures](/posts/expected-and-unexpected-failures/) follows both routes through the layers.
 
 ## Passing outcomes on
 

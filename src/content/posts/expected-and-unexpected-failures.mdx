@@ -1,0 +1,164 @@
+---
+title: "Expected and unexpected failures"
+description: Sorting every failure into a named variant the screen explains or a throw that reaches one boundary, shown on a card deck builder.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - typescript
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with TanStack Query and ts-pattern.
+
+## Sort every failure first
+
+TypeScript does not put a throw in a signature, so `getCard(): Card` may really mean "a card, or anything thrown". Before writing any handling, each failure goes in one of two kinds.
+
+| Expected | Unexpected |
+| --- | --- |
+| The caller can do something about it | Nobody can recover in normal code |
+| Card not found | A card row with no image |
+| Offline | A malformed response |
+| Deck too large | A broken store, a bug |
+| Unauthorized | A status code nobody listed |
+| A variant of the return type | Thrown to a boundary |
+
+One question sorts them: can the caller do something meaningful with it? A thrown error then keeps one meaning, "something nobody planned for".
+
+## Two routes up the layers
+
+An expected failure is a named variant of the result, so it travels up as data. An unexpected one throws past the layers in between and lands in one boundary.
+
+```diagram
+title "Two routes for a failure"
+direction down
+adapter "Card API adapter" detail "classifies the response" tone accent
+usecase "getCard use case" detail "passes variants on" tone primary
+data "Card data component" detail "matches every variant" tone primary
+pure "Card view" detail "ready card only" tone success
+boundary "Failure boundary" detail "logs once, shows a failure" tone danger
+adapter -> usecase "expected: a variant"
+usecase -> data "expected: a variant"
+data -> pure "found: the card"
+adapter -> boundary "unexpected: throws"
+```
+
+## The adapter classifies
+
+The adapter names the few outcomes the screen can use and sends everything else to the default: not OK means unexpected. It never lists every status code.
+
+```ts
+type CardLookup =
+  | { type: 'found'; card: Card }
+  | { type: 'card-not-found' }
+  | { type: 'offline' };
+
+async function lookUpCard(id: CardId): Promise<CardLookup> {
+  const response = await fetchOrOffline(`/cards/${id}`);
+  if (response === 'offline') return { type: 'offline' };
+  if (response.status === 404) return { type: 'card-not-found' };
+  if (!response.ok) throw new HttpError(response.status);
+
+  return { type: 'found', card: parseCard(await response.json()) };
+}
+
+async function fetchOrOffline(url: string): Promise<Response | 'offline'> {
+  try {
+    return await fetch(url);
+  } catch (error) {
+    if (error instanceof TypeError) return 'offline';
+    throw error;
+  }
+}
+```
+
+The `catch` exists to translate a library's throw into an answer, and it rethrows anything else. A 500, or a code added next year, falls through to the throw.
+
+## Validate where data arrives
+
+`parseCard` throws on a response that is not a card. Past the adapter the types can be trusted, so no layer above checks again.
+
+```diagram
+title "Trust starts at the adapter"
+direction down
+group outside "untrusted" tone warning {
+  json "Response body" detail "unknown"
+}
+group inside "trusted types" tone success {
+  parse "parseCard" detail "throws on a bad shape" tone primary
+  card "Card" detail "no further checks"
+}
+json -> parse
+parse -> card
+```
+
+## The data component draws each one
+
+The data component matches every variant, so each expected failure gets a view of its own. The unexpected `failed` state is the one generic branch.
+
+```tsx
+function CardData({ catalog, id, children }: CardDataProps) {
+  const { state, reload } = useReadState(cardQuery(catalog, id));
+
+  return match(state)
+    .with({ type: 'loading' }, () => <Spinner />)
+    .with({ type: 'found' }, ({ card }) => children(card))
+    .with({ type: 'card-not-found' }, () => <Notice text="No card has this id." />)
+    .with({ type: 'offline' }, () => <Notice text="You are offline." onRetry={reload} />)
+    .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
+    .exhaustive();
+}
+```
+
+An expected failure resolves the query, so retries and caching treat it as an answer. Only a throw rejects, and one hook on the query client logs every rejection in one place.
+
+## Following one request twice
+
+```steps
+sequence
+title "One card read, two endings"
+participant adapter "Card API adapter" tone accent
+participant usecase "getCard use case" tone primary
+participant data "Card data component" tone primary
+participant boundary "Failure boundary"
+data -> usecase "Read card 4711"
+usecase -> adapter "Ask the port"
+adapter -> adapter "A 404 becomes an answer"
+adapter --> usecase "card-not-found"
+usecase --> data "card-not-found"
+data -> data "Draws the not-found notice"
+data -> usecase "Read card 4712"
+usecase -> adapter "Ask the port"
+adapter -> adapter "The body fails to parse"
+adapter --> usecase "Throws"
+usecase --> data "Rejects: no answer"
+data --> boundary "Failed state, logged once"
+step "The component asks for a card." : 1 2
+step "The adapter sees a 404. For an id from the route that is an answer, not a fault." : 3
+step "The answer travels up as a named variant." : 4 5
+step "The component has a branch for it and explains it to the reader." : 6
+step "Another read starts." : 7 8
+step "The response is not a card. No caller can fix that, so the adapter throws." : 9
+step "The throw passes the use case, which catches nothing it cannot use." : 10 11
+step "The read ends in its failed state, and the failure is logged once." : 12
+```
+
+## What it buys in maintenance
+
+A new expected outcome is a new variant. The compiler then lists every `match` that has no branch for it.
+
+```diagram
+title "A new variant finds every match"
+direction down
+variant "rate-limited" detail "added to CardLookup" tone warning
+data "Card data component" detail "fails to compile" tone accent
+page "Card page" detail "fails to compile" tone accent
+variant -> data
+variant -> page
+```
+
+Unexpected failures need no such list: they all end at the same boundary, and one function logs them, so a new kind of bug needs no new handling.
+
+## The difference in short
+
+Expected failures are part of the contract, so they are typed and each screen explains them. Unexpected failures are outside it, so they throw to one place that logs them and shows a failure.
