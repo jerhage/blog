@@ -1,0 +1,135 @@
+---
+title: "The domain graph in practice"
+description: What a domain contains, which way imports point, and how a checker keeps the graph free of cycles.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples are TypeScript folders and import paths.
+
+## The five parts of a domain
+
+A domain is a folder. It only gets the parts it needs: one that stores nothing has no adapters.
+
+```text
+src/domains/cards/
+  domain/       ports, entities, value objects
+  use-cases/    one operation per file
+  adapters/     the mechanism behind each port
+  queries/      cache keys and query factories
+  ui/           components, data components, hooks
+```
+
+Imports inside a domain point one way.
+
+```diagram
+title "Imports inside one domain"
+direction down
+ui "ui" tone success
+queries "queries" tone accent
+usecases "use-cases" tone primary
+adapters "adapters" tone accent
+domain "domain" detail "pure, imports nothing above" tone primary
+ui -> queries
+queries -> usecases "types only"
+usecases -> domain
+adapters -> domain
+ui -> domain
+```
+
+| Part | May import | May not import |
+| --- | --- | --- |
+| `domain` | itself, shared types | use cases, adapters, queries, UI |
+| `use-cases` | `domain` | adapters, queries |
+| `adapters` | `domain` | queries |
+| `queries` | `domain`, use case types | UI, adapters |
+| `ui` | `domain`, `queries` | adapters |
+
+## Between domains
+
+Domains form a graph. One way to keep it acyclic is the leaf rule.
+
+```diagram
+title "The leaf rule"
+direction down
+decks "decks" detail "non-leaf" tone accent
+cards "cards" detail "leaf" tone primary
+collection "collection" detail "leaf" tone primary
+decks -> cards "domain, use cases"
+decks -> collection "domain, use cases"
+```
+
+- A leaf imports no other domain.
+- A non-leaf imports only leaves.
+- Nothing imports a non-leaf.
+
+Every edge then starts at a non-leaf and ends at a leaf, so no edge can be followed back. A cycle cannot exist, and a new domain is a leaf unless it must combine others.
+
+The alternative allows any edge and runs a cycle check over the domain graph.
+
+| | Leaf rule | Cycle check |
+| --- | --- | --- |
+| Shape of the graph | leaves and non-leaves | any acyclic graph |
+| Why there is no cycle | the rules make one impossible | a script confirms it on every run |
+| A new edge | forbidden by default | allowed if no cycle closes |
+| Where a shared id lives | in shared types, because a leaf cannot import a leaf | in the domain that owns it |
+
+A cycle check must also see type-only imports, re-exports, dynamic imports and relative paths, or an edge slips past it.
+
+## A checker proves a rule
+
+A rule nobody has seen fail is not a rule. Each one is proven by planting the forbidden import.
+
+```steps
+sequence
+title "Proving the leaf rule"
+participant dev "Developer" tone primary
+participant code "cards domain"
+participant checker "Dependency checker" tone accent
+dev -> code "Import a collection type"
+dev -> checker "Run the check"
+checker --> dev "Fails: a leaf imports a domain"
+dev -> code "Delete the import"
+dev -> checker "Run the check"
+checker --> dev "Passes"
+step "Plant the forbidden import in a leaf." : 1
+step "Run the checker." : 2
+step "It must fail, and name the rule that fired." : 3
+step "Remove the import and run it again." : 4 5
+step "It passes. The rule is proven in both directions." : 6
+```
+
+## Breaking a cycle by inverting an input
+
+Say `decks` shows a statistics panel and `stats` needs a deck to compute a cost curve. That is `stats` importing `decks` and `decks` importing `stats`.
+
+```diagram
+title "A cycle between two domains"
+direction right
+decks "decks" tone accent
+stats "stats" tone accent
+decks -> stats "shows panel"
+stats -> decks "needs a deck"
+```
+
+Moving files does not help: the function still takes a deck. What fixes it is the input. A cost curve never needed a deck, only cards and how many of each. So `stats` declares that.
+
+```ts
+type CardCount = { card: Card; quantity: number };
+
+function costCurve(counts: readonly CardCount[]): ReadonlyMap<number, number>;
+
+const counts = deck.entries.map(({ card, quantity }) => ({
+  card,
+  quantity,
+}));
+const curve = costCurve(counts);
+```
+
+Only `decks` imports `stats` now. The caller reduces its own type to the one `stats` declared, and a signature changed while the boundary stayed where it was. Then rename what is left: `deckSize` inside `stats` becomes `poolSize`, so its name no longer carries a deck.
+
+## Where a new concept goes
+
+Ask which domain would be meaningless without the other. A card means something without a deck, so `decks` imports `cards`, never the reverse. A name that belongs to another domain is the first sign of a wrong home. When two leaves need the same type, it moves down into shared types.
