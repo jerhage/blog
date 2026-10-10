@@ -1,0 +1,112 @@
+---
+title: "Use cases and their named results"
+description: One operation per use case, each answering with its own union of outcomes.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - typescript
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript.
+
+## One use case per operation
+
+A use case is one thing the app does: search cards, save a deck. Each gets its own file, even when it only wraps one port call. It is stateless: the ports it needs come in as an argument.
+
+```diagram
+title "A use case between the screen and the ports"
+direction down
+screen "Data component or write owner" tone success
+usecase "saveDeck" detail "one operation, stateless" tone primary
+decks "DeckRepository" detail "port"
+clock "Clock" detail "port"
+screen -> usecase "calls"
+usecase -> decks
+usecase -> clock
+```
+
+## Each one names its outcomes
+
+The result is a union discriminated on `kind`. The success variant names what it holds. Every expected outcome is a variant beside it.
+
+```ts
+type SaveDeckResult =
+  | { kind: 'saved'; deck: Deck }
+  | { kind: 'deck-too-large'; limit: number }
+  | StorageUnavailable;
+```
+
+```diagram
+title "Three outcomes of saving a deck"
+direction right
+save "saveDeck" tone primary
+saved "saved" detail "holds the deck" tone success
+large "deck-too-large" detail "expected" tone warning
+storage "storage-unavailable" detail "expected" tone warning
+save -> saved
+save -> large
+save -> storage
+```
+
+An expected outcome is one the caller can do something about: tell the person the deck is too big, or that a private window blocks storage. `StorageUnavailable` is shared, because every domain that stores anything can return it.
+
+## Expected or unexpected
+
+| Failure | Where it goes |
+| --- | --- |
+| Deck too large | a variant of the result |
+| Storage blocked in a private window | a variant of the result |
+| A card row with no image, a bug, a broken store | thrown, caught at a boundary |
+
+One question sorts them: can the caller do something meaningful with it? If yes, it is a variant. If no, it throws to a boundary that logs it and shows a failure. A thrown error keeps its meaning of "something nobody planned for".
+
+## Passing outcomes on
+
+A use case that calls another narrows instead of matching.
+
+```ts
+async function saveDeck(
+  deps: SaveDeckDeps,
+  draft: DeckDraft,
+): Promise<SaveDeckResult> {
+  if (draft.cards.length > DECK_LIMIT) {
+    return { kind: 'deck-too-large', limit: DECK_LIMIT };
+  }
+
+  const deck = buildDeck(draft, deps.now());
+  const stored = await deps.decks.put(deck);
+  if (stored.kind !== 'success') return stored;
+
+  return { kind: 'saved', deck: stored.deck };
+}
+```
+
+After the `if`, `stored` is every variant of the port's answer except success. That remainder must fit `SaveDeckResult`. If the port gains a variant the use case does not name, the `return` stops compiling until it does.
+
+## Deciding what an outcome means
+
+Where each outcome gets a text or a recovery, the caller matches on `kind`, and the match is exhaustive.
+
+```ts
+const message = match(result)
+  .with({ kind: 'saved' }, () => 'Deck saved')
+  .with({ kind: 'deck-too-large' }, ({ limit }) => `At most ${limit} cards`)
+  .with({ kind: 'storage-unavailable' }, () => 'Storage is blocked')
+  .exhaustive();
+```
+
+A fourth outcome fails to compile in every caller that matches.
+
+## Why not one `Result<T, E>`
+
+A generic result is one type for every operation: an `ok` flag, a value, and an error.
+
+| | Generic `Result<T, E>` | Named union per use case |
+| --- | --- | --- |
+| Return type | the same everywhere | one per operation |
+| Passing a failure on | one line | one line, by narrowing |
+| The success | always called `value` | named for what it holds |
+| Several legitimate outcomes | all but one are squeezed onto the error side | each is a peer |
+
+`ok` has two values. An operation with three legitimate outcomes puts two of them beside failures nobody expected, and the type cannot tell the kinds apart. A catch-all "storage failed" variant also spreads into every domain's error type. A named union lists only what that operation can answer.
