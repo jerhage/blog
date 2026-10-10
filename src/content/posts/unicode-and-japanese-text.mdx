@@ -14,6 +14,9 @@ import WordSegmentDemo from '../../demos/WordSegmentDemo.svelte';
 import VerticalWritingDemo from '../../demos/VerticalWritingDemo.svelte';
 import SearchFoldDemo from '../../demos/SearchFoldDemo.svelte';
 import NaturalOrderDemo from '../../demos/NaturalOrderDemo.svelte';
+import Diagram from '../../kandan/components/Diagram.svelte';
+import { ENCODING_LAYERS } from '../../diagrams/unicode-encoding';
+import { NORMALIZATION_SQUARE } from '../../diagrams/unicode-normalization';
 
 Why a Japanese string is not a list of characters: code points, UTF-16 and graphemes, normalization, comparison, word and line breaks, vertical text and ruby. The examples are TypeScript, the demos run this browser's own text APIs, and the last part shows where an app that stores and searches Japanese text needs each idea.
 
@@ -25,23 +28,9 @@ A string looks like a list of characters, and for English text that picture rare
 - A **code unit** is the fixed-size piece an encoding stores: 8 bits in UTF-8, 16 bits in UTF-16. One code point takes one or more code units.
 - A **grapheme** is what a reader sees as one character. It can be several code points: <span lang="ja">が</span> can be stored as <span lang="ja">か</span> followed by a separate voiced mark, and a family emoji is three people joined by invisible joiners.
 
-```diagram
-title "One grapheme, two code points, and each code point stored as one UTF-16 unit or three UTF-8 bytes"
-direction down
-grapheme "か + U+3099" detail "one grapheme on screen, drawn が" tone accent
-base "U+304B" detail "か, a code point" tone primary
-mark "U+3099" detail "combining voiced mark" tone primary
-base16 "304B" detail "UTF-16: 1 unit"
-base8 "E3 81 8B" detail "UTF-8: 3 bytes"
-mark16 "3099" detail "UTF-16: 1 unit"
-mark8 "E3 82 99" detail "UTF-8: 3 bytes"
-grapheme -> base
-grapheme -> mark
-base -> base16
-base -> base8
-mark -> mark16
-mark -> mark8
-```
+<div class="diagram-block">
+  <Diagram {...ENCODING_LAYERS} scrollLabel="Encoding diagram" />
+</div>
 
 ## UTF-8 and UTF-16
 
@@ -107,22 +96,9 @@ Two more marks look like dakuten and are not combining: `U+309B` <span lang="ja"
 
 Normalization rewrites a string into one chosen form, so that equivalent strings become equal strings. UAX #15 defines four forms on two axes. One axis is the kind of equivalence: _canonical_, for sequences that are the same character, or _compatibility_, a weaker one for characters that "may have distinct visual appearances or behaviors" but stand for the same thing. The other is whether the result is decomposed into base characters and marks, or composed again afterwards.
 
-```diagram
-title "The four normalization forms: NFC and NFD only reorganize canonically equivalent sequences, the K forms also replace compatibility characters"
-direction down
-group canonical "Canonical" tone primary {
-  nfd "NFD" detail "が becomes か + U+3099"
-  nfc "NFC" detail "ｶﾞ stays ｶﾞ; が stays が"
-}
-group compatibility "Compatibility" tone accent {
-  nfkd "NFKD" detail "ｶﾞ becomes カ + U+3099"
-  nfkc "NFKC" detail "ｶﾞ becomes ガ"
-}
-nfd -> nfc "compose"
-nfkd -> nfkc "compose"
-nfc -> nfkc "compatibility"
-nfd -> nfkd "compatibility"
-```
+<div class="diagram-block">
+  <Diagram {...NORMALIZATION_SQUARE} scrollLabel="Normalization diagram" />
+</div>
 
 ```ts
 'が'.normalize('NFC');  // 'が', U+304C
