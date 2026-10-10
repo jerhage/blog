@@ -109,7 +109,20 @@ adapter -> usecase
 usecase -> cache
 ```
 
-An expected outcome resolves as data, because a cache retries and remembers rejections. A deck that is not found is a result, cached like any other.
+An expected outcome resolves as data, because a cache retries and remembers rejections. A deck that is not found is a result, cached like any other, and the data component matches it exhaustively.
+
+```tsx
+function DeckData({ decks, id, children }: DeckDataProps) {
+  const { state, reload } = useReadState(deckQuery(decks, id));
+
+  return match(state)
+    .with({ type: 'loading' }, () => <Spinner />)
+    .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
+    .with({ type: 'not-found' }, () => <NotFound />)
+    .with({ type: 'found' }, ({ deck }) => children(deck))
+    .exhaustive();
+}
+```
 
 ## Paging
 

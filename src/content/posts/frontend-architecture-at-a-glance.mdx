@@ -161,6 +161,36 @@ function useCardFilter() {
 }
 ```
 
+## 5. Exhaustive matching
+
+Every state and every outcome is a discriminated union, and every place that handles one matches it with `match(...).exhaustive()`. The compiler then checks that each variant has a branch.
+
+```ts
+type SaveState =
+  | { type: 'idle' }
+  | { type: 'saving' }
+  | { type: 'saved' };
+
+const label = (state: SaveState) =>
+  match(state)
+    .with({ type: 'idle' }, () => 'Save')
+    .with({ type: 'saving' }, () => 'Saving')
+    .with({ type: 'saved' }, () => 'Saved')
+    .exhaustive();
+```
+
+Add a fourth variant, such as `{ type: 'failed' }`, and `label` stops compiling until it has a branch for it. Nothing is forgotten, because the build fails first.
+
+```diagram
+title "A new variant reaches every match"
+direction right
+union "Union" detail "gains a variant" tone warning
+label "Button label match" detail "fails to compile" tone accent
+view "Screen match" detail "fails to compile" tone accent
+union -> label
+union -> view
+```
+
 ## One search, end to end
 
 ```steps
