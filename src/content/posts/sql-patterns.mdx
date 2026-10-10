@@ -1,0 +1,1338 @@
+---
+title: "SQL patterns"
+description: Recipes for the queries that come up again and again, each run on a small Flesh and Blood card database with its real result.
+published: 2026-10-10
+tags:
+  - sql
+  - databases
+---
+
+import RecursionDemo from '../../demos/RecursionDemo.svelte';
+
+Recipes for the queries that come up again and again: loading a list without a query per item, counting and filtering groups, asking whether a row exists or has no match, ranking, running totals, removing duplicates, naming the steps of a query with common table expressions, and walking a tree. Each runs on the same sample tables as [SQL as set theory](/posts/sql-as-set-theory/), with its real result. The tree recipe adds one more table, `card_types`.
+
+## Find a recipe
+
+| If you want | Use |
+| --- | --- |
+| [a list and each item's children](#load-a-list-with-its-children) | one `JOIN`, or one batch query with `IN` |
+| [the numbers a screen shows](#return-exactly-what-the-screen-shows) | a projection with `GROUP BY` and aggregates |
+| [counts from two child tables](#count-from-two-child-tables) | one subquery per child table |
+| [groups whose totals pass a test](#filter-rows-then-filter-groups) | `WHERE` for rows, `HAVING` for groups |
+| [several counts in one pass](#count-several-conditions-in-one-pass) | `COUNT(*) FILTER (WHERE …)`, or `COUNT(CASE …)` |
+| [to know whether a row exists](#check-whether-a-matching-row-exists) | `EXISTS (SELECT 1 …)` |
+| [rows with no match](#find-rows-with-no-match) | `NOT EXISTS` |
+| [the top N rows per group](#keep-the-top-n-per-group) | `ROW_NUMBER()` in a subquery |
+| [a running total](#running-totals) | `SUM() OVER (ORDER BY … ROWS …)` |
+| [a label computed from a value](#compute-a-label) | `CASE` |
+| [one row per value or per group](#remove-duplicates) | `DISTINCT`, or `ROW_NUMBER() = 1` |
+| [two lists as one](#combine-two-lists) | `UNION ALL`, or `UNION` |
+| [a name for each step of a long query](#name-a-subquery-with-with) | `WITH name AS (…)`, a common table expression |
+| [one intermediate result used twice](#write-a-query-as-named-steps) | a CTE referenced twice |
+| [control over whether a CTE runs once](#inline-or-materialize-a-cte) | `MATERIALIZED` or `NOT MATERIALIZED` |
+| [every row below or above a node in a tree](#walk-a-tree-with-with-recursive) | `WITH RECURSIVE` |
+| [a row for every day, even days with no data](#generate-a-series-of-rows) | a counting `WITH RECURSIVE`, or `generate_series` in Postgres |
+| [to choose where an intermediate result lives](#cte-subquery-view-or-temporary-table) | a subquery, a CTE, a view or a temporary table |
+
+The tables are the ones from the first post:
+
+**heroes**
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 2 | Katsu |
+| 3 | Bravo |
+| 4 | Oldhim |
+
+**cards**
+
+| id | hero_id | name | format | added_on |
+| --- | --- | --- | --- | --- |
+| 101 | 1 | Warrior's Valor | cc | 2026-09-01 |
+| 102 | 1 | Driving Blade | blitz | 2026-09-05 |
+| 103 | 1 | Overpower | cc | 2026-09-20 |
+| 104 | 2 | Head Jab | cc | 2026-09-18 |
+| 105 | 3 | Chokeslam | blitz | 2026-09-10 |
+| 106 | NULL | Sink Below | blitz | 2026-09-12 |
+
+**matches**
+
+| id | hero_id | points | result | played_on |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 30 | won | 2026-09-01 |
+| 2 | 1 | 45 | lost | 2026-09-03 |
+| 3 | 1 | 20 | won | 2026-09-10 |
+| 4 | 2 | 60 | draw | 2026-09-02 |
+| 5 | 2 | 15 | lost | 2026-09-12 |
+| 6 | 3 | 25 | won | 2026-09-05 |
+| 7 | 3 | 25 | won | 2026-09-10 |
+| 8 | 3 | 40 | lost | 2026-09-14 |
+
+## Load a list with its children
+
+A screen lists heroes with their cards. The first version loads the heroes, then loops over them and loads each hero's cards:
+
+```text
+heroes = query("SELECT id, name FROM heroes ORDER BY id")
+for hero in heroes:
+  hero.cards = query(
+    "SELECT id, name FROM cards WHERE hero_id = ? ORDER BY id",
+    hero.id,
+  )
+```
+
+```sequence
+title "A query per hero"
+participant app "App" tone primary
+participant db "Database"
+app -> db "SELECT … FROM heroes"
+db --> app "4 heroes"
+app -> db "cards for hero 1"
+db --> app "3 cards"
+app -> db "cards for hero 2"
+db --> app "1 card"
+app -> db "cards for hero 3"
+db --> app "1 card"
+app -> db "cards for hero 4"
+db --> app "no cards"
+```
+
+```sql
+SELECT id, name
+FROM heroes
+ORDER BY id;
+```
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 2 | Katsu |
+| 3 | Bravo |
+| 4 | Oldhim |
+
+```sql
+SELECT id, name
+FROM cards
+WHERE hero_id = 1
+ORDER BY id;
+```
+
+| id | name |
+| --- | --- |
+| 101 | Warrior's Valor |
+| 102 | Driving Blade |
+| 103 | Overpower |
+
+The second query runs once per hero, here for hero 1. For N heroes that is 1 + N queries, the N+1 problem. With a client/server database such as Postgres or MySQL, each query is a message to the server and an answer back, and those round trips run one after another. A page that takes a millisecond per round trip spends a second on a thousand heroes before it does anything else.
+
+One way to stop asking from inside the loop is a join, which returns every pair in one result:
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+ORDER BY h.id, c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 102 | Driving Blade |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | 105 | Chokeslam |
+| Oldhim | NULL | NULL |
+
+The join repeats each hero's columns on every card row, and the code groups the rows back into heroes. A `LEFT JOIN` keeps Oldhim, who has no cards. The other way is a batch: load the heroes, collect their ids, and load all their cards with one `IN` list:
+
+```sql
+SELECT hero_id, id, name
+FROM cards
+WHERE hero_id IN (1, 2, 3, 4)
+ORDER BY hero_id, id;
+```
+
+| hero_id | id | name |
+| --- | --- | --- |
+| 1 | 101 | Warrior's Valor |
+| 1 | 102 | Driving Blade |
+| 1 | 103 | Overpower |
+| 2 | 104 | Head Jab |
+| 3 | 105 | Chokeslam |
+
+The batch is one more query than the join and repeats nothing; the code matches cards to heroes by `hero_id`. Either way the number of queries stops growing with the number of heroes:
+
+| Approach | Queries | 4 heroes | 1,000 heroes |
+| --- | ---: | ---: | ---: |
+| A query per hero | 1 + N | 5 | 1,001 |
+| One JOIN | 1 | 1 | 1 |
+| A batch with IN | 2 | 2 | 2 |
+
+The round trip is what matters, so it depends on the database. SQLite runs inside the application's process, and its documentation ("Many Small Queries Are Efficient In SQLite") says a query there is a function call with no message round trip.
+
+Set view: [A join is a filtered product](/posts/sql-as-set-theory/#a-join-is-a-filtered-product), [Semi-joins: EXISTS and IN](/posts/sql-as-set-theory/#semi-joins-exists-and-in).
+
+## Return exactly what the screen shows
+
+A dashboard shows each hero with a card count and the date of the latest card. Loading every card to count them in code moves all the rows to compute a few numbers. A query can return the numbers:
+
+```sql
+SELECT
+  h.id,
+  h.name,
+  COUNT(c.id) AS card_count,
+  MAX(c.added_on) AS latest_card
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+GROUP BY h.id, h.name
+ORDER BY h.id;
+```
+
+| id | name | card_count | latest_card |
+| --- | --- | --- | --- |
+| 1 | Dorinthea | 3 | 2026-09-20 |
+| 2 | Katsu | 1 | 2026-09-18 |
+| 3 | Bravo | 1 | 2026-09-10 |
+| 4 | Oldhim | 0 | NULL |
+
+The `LEFT JOIN` keeps Oldhim, and `COUNT(c.id)` gives him 0. `COUNT(*)` would count rows, and Oldhim has one row, the one the left join filled with `NULL`:
+
+```sql
+SELECT
+  h.id,
+  h.name,
+  COUNT(*) AS card_count
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+GROUP BY h.id, h.name
+ORDER BY h.id;
+```
+
+| id | name | card_count |
+| --- | --- | --- |
+| 1 | Dorinthea | 3 |
+| 2 | Katsu | 1 |
+| 3 | Bravo | 1 |
+| 4 | Oldhim | 1 |
+
+`COUNT(column)` counts the rows where that column is not `NULL`, so counting the right table's key counts real matches. `MAX` over no values returns `NULL`, the honest answer for Oldhim's latest card.
+
+A result like this need not match any table. It is a read model: rows built for one screen, combining tables and computed values, while the tables keep the form that suits writing. The name projection fits loosely; in the algebra a projection only drops columns, and here the `SELECT` list also computes new ones.
+
+Set view: [Projection: SELECT and DISTINCT](/posts/sql-as-set-theory/#projection-select-and-distinct), [GROUP BY is a partition](/posts/sql-as-set-theory/#group-by-is-a-partition).
+
+## Count from two child tables
+
+Extend the dashboard with match counts and points, joining both child tables at once, and the numbers go wrong:
+
+```sql
+SELECT
+  h.name,
+  COUNT(c.id) AS cards,
+  COUNT(m.id) AS played,
+  SUM(m.points) AS scored
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+LEFT JOIN matches m ON m.hero_id = h.id
+GROUP BY h.id, h.name
+ORDER BY h.id;
+```
+
+| name | cards | played | scored |
+| --- | --- | --- | --- |
+| Dorinthea | 9 | 9 | 285 |
+| Katsu | 2 | 2 | 75 |
+| Bravo | 3 | 3 | 90 |
+| Oldhim | 0 | 0 | NULL |
+
+Dorinthea has 3 cards and 3 matches, not 9 of each. Follow her rows through the query. Joining the cards gives three rows for her; joining the matches to each of those gives three rows per card, nine in all:
+
+```sql
+SELECT c.id AS card_id, m.id AS match_id, m.points
+FROM cards c
+JOIN matches m ON m.hero_id = c.hero_id
+WHERE c.hero_id = 1
+ORDER BY c.id, m.id;
+```
+
+| card_id | match_id | points |
+| --- | --- | --- |
+| 101 | 1 | 30 |
+| 101 | 2 | 45 |
+| 101 | 3 | 20 |
+| 102 | 1 | 30 |
+| 102 | 2 | 45 |
+| 102 | 3 | 20 |
+| 103 | 1 | 30 |
+| 103 | 2 | 45 |
+| 103 | 3 | 20 |
+
+`COUNT` and `SUM` then see every card three times and every match three times, and her points, 95, become 285. Each join multiplies the rows by the number of matches, so two independent one-to-many joins produce every combination of a card with a match.
+
+`COUNT(DISTINCT …)` repairs the counts, and it is tempting to repair the sum the same way:
+
+```sql
+SELECT
+  h.name,
+  COUNT(DISTINCT c.id) AS cards,
+  COUNT(DISTINCT m.id) AS played,
+  SUM(DISTINCT m.points) AS scored
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+LEFT JOIN matches m ON m.hero_id = h.id
+GROUP BY h.id, h.name
+ORDER BY h.id;
+```
+
+| name | cards | played | scored |
+| --- | --- | --- | --- |
+| Dorinthea | 3 | 3 | 95 |
+| Katsu | 1 | 2 | 75 |
+| Bravo | 1 | 3 | 65 |
+| Oldhim | 0 | 0 | NULL |
+
+The counts are right now, but Bravo's points read 65 instead of 90: his two matches of 25 are distinct matches with the same points, and `SUM(DISTINCT points)` adds 25 once. Aggregate each child table on its own instead, so nothing multiplies:
+
+```sql
+SELECT
+  h.name,
+  (SELECT COUNT(*) FROM cards c
+    WHERE c.hero_id = h.id) AS cards,
+  (SELECT COUNT(*) FROM matches m
+    WHERE m.hero_id = h.id) AS played,
+  (SELECT SUM(m.points) FROM matches m
+    WHERE m.hero_id = h.id) AS scored
+FROM heroes h
+ORDER BY h.id;
+```
+
+| name | cards | played | scored |
+| --- | --- | --- | --- |
+| Dorinthea | 3 | 3 | 95 |
+| Katsu | 1 | 2 | 75 |
+| Bravo | 1 | 3 | 90 |
+| Oldhim | 0 | 0 | NULL |
+
+When each child table contributes several columns, join against one grouped subquery per child table instead. Each subquery has at most one row per hero, so the joins cannot multiply anything:
+
+```sql
+SELECT
+  h.name,
+  COALESCE(c.cards, 0) AS cards,
+  COALESCE(m.played, 0) AS played,
+  m.scored
+FROM heroes h
+LEFT JOIN (
+  SELECT hero_id, COUNT(*) AS cards
+  FROM cards
+  GROUP BY hero_id
+) c ON c.hero_id = h.id
+LEFT JOIN (
+  SELECT hero_id, COUNT(*) AS played, SUM(points) AS scored
+  FROM matches
+  GROUP BY hero_id
+) m ON m.hero_id = h.id
+ORDER BY h.id;
+```
+
+| name | cards | played | scored |
+| --- | --- | --- | --- |
+| Dorinthea | 3 | 3 | 95 |
+| Katsu | 1 | 2 | 75 |
+| Bravo | 1 | 3 | 90 |
+| Oldhim | 0 | 0 | NULL |
+
+Oldhim's `NULL` in `scored` comes from `SUM` over no rows in the correlated form and from the left join in the grouped form. `COALESCE(…, 0)` turns it into 0 where the screen needs a number, as the grouped form does for the counts.
+
+Set view: [A join is a filtered product](/posts/sql-as-set-theory/#a-join-is-a-filtered-product).
+
+## Filter rows, then filter groups
+
+Find the heroes whose won matches add up to at least 50. That has a condition on rows, the result, and a condition on groups, the sum. `WHERE` filters rows before grouping; `HAVING` filters groups after it:
+
+```sql
+SELECT hero_id, SUM(points) AS scored
+FROM matches
+WHERE result = 'won'
+GROUP BY hero_id
+HAVING SUM(points) >= 50
+ORDER BY hero_id;
+```
+
+| hero_id | scored |
+| --- | --- |
+| 1 | 50 |
+| 3 | 50 |
+
+Drop the `WHERE` and the sum includes lost and drawn matches, so every hero passes:
+
+```sql
+SELECT hero_id, SUM(points) AS scored
+FROM matches
+GROUP BY hero_id
+HAVING SUM(points) >= 50
+ORDER BY hero_id;
+```
+
+| hero_id | scored |
+| --- | --- |
+| 1 | 95 |
+| 2 | 75 |
+| 3 | 90 |
+
+A condition that does not need an aggregate belongs in `WHERE`: the rows it removes are never grouped, and an index can help find the rest. Write the aggregate itself in `HAVING` rather than its alias, which Postgres rejects there.
+
+Set view: [GROUP BY is a partition](/posts/sql-as-set-theory/#group-by-is-a-partition), [The order a query is evaluated in](/posts/sql-as-set-theory/#the-order-a-query-is-evaluated-in).
+
+## Count several conditions in one pass
+
+A report needs, per hero, the number of matches, how many were won, how many were lost, and the points from won matches. Four queries would do it, or one pass with `FILTER`, which feeds an aggregate only the rows where its condition is true:
+
+```sql
+SELECT
+  hero_id,
+  COUNT(*) AS played,
+  COUNT(*) FILTER (WHERE result = 'won') AS won,
+  COUNT(*) FILTER (WHERE result = 'lost') AS lost,
+  SUM(points) FILTER (WHERE result = 'won') AS points_won
+FROM matches
+GROUP BY hero_id
+ORDER BY hero_id;
+```
+
+| hero_id | played | won | lost | points_won |
+| --- | --- | --- | --- | --- |
+| 1 | 3 | 2 | 1 | 50 |
+| 2 | 2 | 0 | 1 | NULL |
+| 3 | 3 | 2 | 1 | 50 |
+
+Postgres supports `FILTER`, and SQLite has since 3.30.0. MySQL's aggregate function reference documents no `FILTER` clause. The portable form puts a `CASE` inside the aggregate:
+
+```sql
+SELECT
+  hero_id,
+  COUNT(*) AS played,
+  COUNT(CASE WHEN result = 'won' THEN 1 END) AS won,
+  COUNT(CASE WHEN result = 'lost' THEN 1 END) AS lost,
+  SUM(CASE WHEN result = 'won' THEN points END) AS points_won
+FROM matches
+GROUP BY hero_id
+ORDER BY hero_id;
+```
+
+| hero_id | played | won | lost | points_won |
+| --- | --- | --- | --- | --- |
+| 1 | 3 | 2 | 1 | 50 |
+| 2 | 2 | 0 | 1 | NULL |
+| 3 | 3 | 2 | 1 | 50 |
+
+The `CASE` has no `ELSE`, so a row that does not match gives `NULL`, and `COUNT` and `SUM` skip `NULL`. Katsu has no won matches, so his points are the sum of nothing, `NULL` in both forms.
+
+Set view: [GROUP BY is a partition](/posts/sql-as-set-theory/#group-by-is-a-partition).
+
+## Check whether a matching row exists
+
+A badge shows whether each hero has a `cc` card. The question is yes or no, so ask it as yes or no with `EXISTS`:
+
+```sql
+SELECT
+  h.id,
+  h.name,
+  EXISTS (
+    SELECT 1
+    FROM cards c
+    WHERE c.hero_id = h.id
+      AND c.format = 'cc'
+  ) AS has_cc_card
+FROM heroes h
+ORDER BY h.id;
+```
+
+| id | name | has_cc_card |
+| --- | --- | --- |
+| 1 | Dorinthea | 1 |
+| 2 | Katsu | 1 |
+| 3 | Bravo | 0 |
+| 4 | Oldhim | 0 |
+
+SQLite prints the answer as `1` or `0`; Postgres returns a boolean, `true` or `false`. For one hero, the same test runs on its own, beside the count:
+
+```sql
+SELECT EXISTS (
+  SELECT 1
+  FROM cards
+  WHERE hero_id = 1
+) AS has_cards;
+```
+
+| has_cards |
+| --- |
+| 1 |
+
+```sql
+SELECT COUNT(*) AS card_count
+FROM cards
+WHERE hero_id = 1;
+```
+
+| card_count |
+| --- |
+| 3 |
+
+The count also answers "is it more than zero", and that is the reason not to use it for the yes or no question. `COUNT` has to find every matching row before it can return, while the Postgres documentation says an `EXISTS` subquery generally runs only long enough to find one row. For a hero with three cards the difference is nothing; for one with three million it is the whole scan. Use the count when the number is the answer.
+
+Inside `EXISTS`, the select list is never read, which is why the convention is `SELECT 1`.
+
+Set view: [Semi-joins: EXISTS and IN](/posts/sql-as-set-theory/#semi-joins-exists-and-in).
+
+## Find rows with no match
+
+Find the heroes who own no card. Three forms look equivalent, and on these tables one of them returns nothing, because card 106 has no hero:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM cards c
+  WHERE c.hero_id = h.id
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 4 | Oldhim |
+
+| Form | With a NULL in the other table | Note |
+| --- | --- | --- |
+| `NOT EXISTS (SELECT 1 … WHERE c.hero_id = h.id)` | Correct | Says what it means; Postgres 14 planned it as an anti-join here. |
+| `LEFT JOIN … WHERE c.id IS NULL` | Correct | Test a column that cannot be `NULL` in a real match, such as the key. |
+| `NOT IN (SELECT c.hero_id …)` | No rows at all | Safe only when the list cannot hold `NULL`. |
+
+The steps by which `NOT IN` loses every row are in [NOT IN meets a NULL](/posts/sql-as-set-theory/#not-in-meets-a-null).
+
+Set view: [Anti-joins: NOT EXISTS](/posts/sql-as-set-theory/#anti-joins-not-exists).
+
+## Keep the top N per group
+
+Show each hero's two largest matches. `LIMIT 2` limits the whole result, not each hero. Number the rows within each hero instead, then keep the first two:
+
+```sql
+SELECT hero_id, id, points
+FROM (
+  SELECT
+    hero_id,
+    id,
+    points,
+    ROW_NUMBER() OVER (
+      PARTITION BY hero_id
+      ORDER BY points DESC, id
+    ) AS position
+  FROM matches
+) ranked
+WHERE position <= 2
+ORDER BY hero_id, position;
+```
+
+| hero_id | id | points |
+| --- | --- | --- |
+| 1 | 2 | 45 |
+| 1 | 1 | 30 |
+| 2 | 4 | 60 |
+| 2 | 5 | 15 |
+| 3 | 8 | 40 |
+| 3 | 6 | 25 |
+
+`ROW_NUMBER()` counts 1, 2, 3 within each partition in the window's order. The filter sits outside, in a subquery, because a window function cannot appear in `WHERE`.
+
+Ties need a decision. Bravo has two matches of 25, and ordering by `points DESC` alone leaves their order undefined, so which one is second could change from run to run. Adding `id` to the window's `ORDER BY` settles it. When ties should share a place, use a ranking function instead:
+
+```sql
+SELECT
+  id,
+  points,
+  ROW_NUMBER() OVER (ORDER BY points DESC, id) AS row_number,
+  RANK() OVER (ORDER BY points DESC) AS rank,
+  DENSE_RANK() OVER (ORDER BY points DESC) AS dense_rank
+FROM matches
+WHERE hero_id = 3
+ORDER BY points DESC, id;
+```
+
+| id | points | row_number | rank | dense_rank |
+| --- | --- | --- | --- | --- |
+| 8 | 40 | 1 | 1 | 1 |
+| 6 | 25 | 2 | 2 | 2 |
+| 7 | 25 | 3 | 2 | 2 |
+
+`RANK()` gives tied rows the same number and skips the next one; `DENSE_RANK()` gives them the same number and skips nothing. Filtering on `RANK() <= 2` keeps every row tied for second place, so it can return more than two.
+
+Set view: [Window functions: group without collapsing](/posts/sql-as-set-theory/#window-functions-group-without-collapsing).
+
+## Running totals
+
+A chart plots points over time, so each match needs the sum of every match up to it. A window with an `ORDER BY` computes that, and its default frame has a catch:
+
+```sql
+SELECT
+  id,
+  played_on,
+  points,
+  SUM(points) OVER (ORDER BY played_on) AS running
+FROM matches
+ORDER BY played_on, id;
+```
+
+| id | played_on | points | running |
+| --- | --- | --- | --- |
+| 1 | 2026-09-01 | 30 | 30 |
+| 4 | 2026-09-02 | 60 | 90 |
+| 2 | 2026-09-03 | 45 | 135 |
+| 6 | 2026-09-05 | 25 | 160 |
+| 3 | 2026-09-10 | 20 | 205 |
+| 7 | 2026-09-10 | 25 | 205 |
+| 5 | 2026-09-12 | 15 | 220 |
+| 8 | 2026-09-14 | 40 | 260 |
+
+Matches 3 and 7 share the date 2026-09-10, and both show 205. With an `ORDER BY` and no frame clause, the frame is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, and in `RANGE` mode the current row includes its peers, the rows with the same `ORDER BY` value. Both Postgres and SQLite document this default. So match 3's total already includes match 7. Order by something unique and count rows, not values:
+
+```sql
+SELECT
+  id,
+  played_on,
+  points,
+  SUM(points) OVER (
+    ORDER BY played_on, id
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  ) AS running
+FROM matches
+ORDER BY played_on, id;
+```
+
+| id | played_on | points | running |
+| --- | --- | --- | --- |
+| 1 | 2026-09-01 | 30 | 30 |
+| 4 | 2026-09-02 | 60 | 90 |
+| 2 | 2026-09-03 | 45 | 135 |
+| 6 | 2026-09-05 | 25 | 160 |
+| 3 | 2026-09-10 | 20 | 180 |
+| 7 | 2026-09-10 | 25 | 205 |
+| 5 | 2026-09-12 | 15 | 220 |
+| 8 | 2026-09-14 | 40 | 260 |
+
+Add a partition for a running total per hero:
+
+```sql
+SELECT
+  hero_id,
+  id,
+  points,
+  SUM(points) OVER (
+    PARTITION BY hero_id
+    ORDER BY played_on, id
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  ) AS running
+FROM matches
+ORDER BY hero_id, played_on, id;
+```
+
+| hero_id | id | points | running |
+| --- | --- | --- | --- |
+| 1 | 1 | 30 | 30 |
+| 1 | 2 | 45 | 75 |
+| 1 | 3 | 20 | 95 |
+| 2 | 4 | 60 | 60 |
+| 2 | 5 | 15 | 75 |
+| 3 | 6 | 25 | 25 |
+| 3 | 7 | 25 | 50 |
+| 3 | 8 | 40 | 90 |
+
+Set view: [Window functions: group without collapsing](/posts/sql-as-set-theory/#window-functions-group-without-collapsing).
+
+## Compute a label
+
+A list tags each match as high, mid or low. `CASE` computes the tag in the query, so every screen that shows it gets the same rule:
+
+```sql
+SELECT
+  id,
+  points,
+  CASE
+    WHEN points >= 50 THEN 'high'
+    WHEN points >= 25 THEN 'mid'
+    ELSE 'low'
+  END AS band
+FROM matches
+ORDER BY id;
+```
+
+| id | points | band |
+| --- | --- | --- |
+| 1 | 30 | mid |
+| 2 | 45 | mid |
+| 3 | 20 | low |
+| 4 | 60 | high |
+| 5 | 15 | low |
+| 6 | 25 | mid |
+| 7 | 25 | mid |
+| 8 | 40 | mid |
+
+The `WHEN` branches are tried top to bottom and the first true one wins, so a match of 60 is high and never reaches the mid test. Without an `ELSE`, a value that matches no branch gives `NULL`. Order the branches from the most specific test to the least.
+
+Set view: [Projection: SELECT and DISTINCT](/posts/sql-as-set-theory/#projection-select-and-distinct).
+
+## Remove duplicates
+
+"Remove duplicates" means one of two things. The first is one row per distinct value, which is `DISTINCT`:
+
+```sql
+SELECT DISTINCT result
+FROM matches
+ORDER BY result;
+```
+
+| result |
+| --- |
+| draw |
+| lost |
+| won |
+
+`DISTINCT` compares whole output rows, so with two columns it keeps each distinct pair:
+
+```sql
+SELECT DISTINCT hero_id, result
+FROM matches
+ORDER BY hero_id, result;
+```
+
+| hero_id | result |
+| --- | --- |
+| 1 | lost |
+| 1 | won |
+| 2 | draw |
+| 2 | lost |
+| 3 | lost |
+| 3 | won |
+
+The second is one whole row per group, chosen by a rule, such as each hero's newest card. That is the top N recipe with N = 1:
+
+```sql
+SELECT hero_id, id, name, added_on
+FROM (
+  SELECT
+    hero_id,
+    id,
+    name,
+    added_on,
+    ROW_NUMBER() OVER (
+      PARTITION BY hero_id
+      ORDER BY added_on DESC, id DESC
+    ) AS position
+  FROM cards
+  WHERE hero_id IS NOT NULL
+) newest_first
+WHERE position = 1
+ORDER BY hero_id;
+```
+
+| hero_id | id | name | added_on |
+| --- | --- | --- | --- |
+| 1 | 103 | Overpower | 2026-09-20 |
+| 2 | 104 | Head Jab | 2026-09-18 |
+| 3 | 105 | Chokeslam | 2026-09-10 |
+
+Postgres has a shorter form, `DISTINCT ON`, which keeps the first row of each group in the query's `ORDER BY`. It is a Postgres extension to the SQL standard, and SQLite rejects it. The result is the same rows:
+
+```sql
+SELECT DISTINCT ON (hero_id)
+  hero_id, id, name, added_on
+FROM cards
+WHERE hero_id IS NOT NULL
+ORDER BY hero_id, added_on DESC, id DESC;
+```
+
+| hero_id | id | name | added_on |
+| --- | --- | --- | --- |
+| 1 | 103 | Overpower | 2026-09-20 |
+| 2 | 104 | Head Jab | 2026-09-18 |
+| 3 | 105 | Chokeslam | 2026-09-10 |
+
+Set view: [Projection: SELECT and DISTINCT](/posts/sql-as-set-theory/#projection-select-and-distinct), [Window functions: group without collapsing](/posts/sql-as-set-theory/#window-functions-group-without-collapsing).
+
+## Combine two lists
+
+A list needs the heroes who have a `cc` card or a won match. `UNION` returns each id once; `UNION ALL` appends the lists and keeps every repeat:
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+UNION
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 2 |
+| 3 |
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+UNION ALL
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 1 |
+| 1 |
+| 1 |
+| 2 |
+| 3 |
+| 3 |
+
+`UNION` sorts or hashes to find the repeats. When the two sides cannot overlap, or the repeats are wanted, use `UNION ALL`.
+
+Set view: [Union, intersection and difference](/posts/sql-as-set-theory/#union-intersection-and-difference), [UNION ALL keeps every row](/posts/sql-as-set-theory/#union-all-keeps-every-row).
+
+## Name a subquery with WITH
+
+A report lists each hero with the points of their won matches. The totals come from a grouped query over `matches`, and the names from `heroes`, so one query has to sit inside the other. The first way puts the grouped query in `FROM`, as a subquery with an alias:
+
+```sql
+SELECT h.name, s.scored
+FROM heroes h
+JOIN (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  WHERE result = 'won'
+  GROUP BY hero_id
+) s ON s.hero_id = h.id
+ORDER BY h.id;
+```
+
+| name | scored |
+| --- | --- |
+| Dorinthea | 50 |
+| Bravo | 50 |
+
+A common table expression, or CTE, is the same subquery moved in front of the statement and given a name. `WITH scoring AS (…)` defines `scoring`, and the rest of the statement uses it like a table:
+
+```sql
+WITH scoring AS (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  WHERE result = 'won'
+  GROUP BY hero_id
+)
+SELECT h.name, s.scored
+FROM heroes h
+JOIN scoring s ON s.hero_id = h.id
+ORDER BY h.id;
+```
+
+| name | scored |
+| --- | --- |
+| Dorinthea | 50 |
+| Bravo | 50 |
+
+The two return the same rows, because they are the same query: the CTE changes where the subquery is written, not what it computes. The name exists only inside this one statement.
+
+The third way asks for the total once per hero, with a correlated subquery: one that refers to a column of the outer query, here `h.id`, so it is evaluated once for each hero row, at least logically.
+
+```sql
+SELECT
+  h.name,
+  (
+    SELECT SUM(m.points)
+    FROM matches m
+    WHERE m.hero_id = h.id
+      AND m.result = 'won'
+  ) AS scored
+FROM heroes h
+ORDER BY h.id;
+```
+
+| name | scored |
+| --- | --- |
+| Dorinthea | 50 |
+| Katsu | NULL |
+| Bravo | 50 |
+| Oldhim | NULL |
+
+It returns four rows, not two. The outer query keeps every hero, and for a hero with no won match, `SUM` over no rows is `NULL`, so Katsu and Oldhim stay in the list with no total, where the join to the grouped subquery dropped them. The correlated form behaves like a `LEFT JOIN`, and the CTE written with one returns exactly its rows:
+
+```sql
+WITH scoring AS (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  WHERE result = 'won'
+  GROUP BY hero_id
+)
+SELECT h.name, s.scored
+FROM heroes h
+LEFT JOIN scoring s ON s.hero_id = h.id
+ORDER BY h.id;
+```
+
+| name | scored |
+| --- | --- |
+| Dorinthea | 50 |
+| Katsu | NULL |
+| Bravo | 50 |
+| Oldhim | NULL |
+
+A subquery used as a value must also return at most one row. Postgres stops with `more than one row returned by a subquery used as an expression` when it returns more; SQLite, in a run of the same kind of query, used the first row and reported nothing.
+
+The difference between the three is in reading them. The subquery in `FROM` is read inside out: the middle of the statement runs first. The correlated subquery reads well for one value per row, and becomes one repeated subquery per column when the screen needs more, as in [Count from two child tables](#count-from-two-child-tables). The CTE is read top to bottom, each name defined before it is used. Pick the join or the left join for the rows it keeps, then the form that reads best; for a subquery of more than a few lines, that is usually the CTE.
+
+Set view: [A join is a filtered product](/posts/sql-as-set-theory/#a-join-is-a-filtered-product), [Outer joins: LEFT and FULL](/posts/sql-as-set-theory/#outer-joins-left-and-full), [GROUP BY is a partition](/posts/sql-as-set-theory/#group-by-is-a-partition).
+
+## Write a query as named steps
+
+Rank the heroes by the points of the matches they did not lose. That is three steps: filter the matches, total them per hero, rank the totals. Nested subqueries put the last step outside and the first step in the middle:
+
+```sql
+SELECT h.name, r.scored, r.played, r.place
+FROM (
+  SELECT
+    hero_id,
+    scored,
+    played,
+    RANK() OVER (ORDER BY scored DESC) AS place
+  FROM (
+    SELECT hero_id, SUM(points) AS scored, COUNT(*) AS played
+    FROM (
+      SELECT hero_id, points
+      FROM matches
+      WHERE result <> 'lost'
+    ) kept
+    GROUP BY hero_id
+  ) scoring
+) r
+JOIN heroes h ON h.id = r.hero_id
+ORDER BY r.place, h.name;
+```
+
+One `WITH` can define several CTEs, separated by commas, and each one can use the CTEs defined before it. Written that way, the steps appear in the order they happen, each with a name:
+
+```sql
+WITH kept AS (
+  SELECT hero_id, points
+  FROM matches
+  WHERE result <> 'lost'
+),
+scoring AS (
+  SELECT hero_id, SUM(points) AS scored, COUNT(*) AS played
+  FROM kept
+  GROUP BY hero_id
+),
+ranked AS (
+  SELECT
+    hero_id,
+    scored,
+    played,
+    RANK() OVER (ORDER BY scored DESC) AS place
+  FROM scoring
+)
+SELECT h.name, r.scored, r.played, r.place
+FROM ranked r
+JOIN heroes h ON h.id = r.hero_id
+ORDER BY r.place, h.name;
+```
+
+| name | scored | played | place |
+| --- | --- | --- | --- |
+| Katsu | 60 | 1 | 1 |
+| Bravo | 50 | 2 | 2 |
+| Dorinthea | 50 | 2 | 2 |
+
+Both versions return these three rows. Bravo and Dorinthea tie at 50, so `RANK()` gives both second place. Each step can also be checked alone, by putting its name in the final `SELECT`: `SELECT * FROM scoring` shows the totals before the ranking.
+
+A name also lets one result appear twice. To list the heroes who scored more than the average hero, the per-hero totals are needed twice: once as the rows to filter, and once to compute the average. Without a CTE, the grouped subquery would be written out twice:
+
+```sql
+WITH scoring AS (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  GROUP BY hero_id
+)
+SELECT hero_id, scored
+FROM scoring
+WHERE scored > (SELECT AVG(scored) FROM scoring)
+ORDER BY hero_id;
+```
+
+| hero_id | scored |
+| --- | --- |
+| 1 | 95 |
+| 3 | 90 |
+
+The totals are 95, 75 and 90, the average is 86.67, and Dorinthea and Bravo are above it.
+
+The same style turns the sets of [Define the set, then write the query](/posts/sql-as-set-theory/#define-the-set-then-write-the-query) into a query that reads like their definition, one named set per CTE and the set operators at the end:
+
+```sql
+WITH
+  authors AS (
+    SELECT hero_id FROM cards WHERE format = 'cc'
+  ),
+  busy AS (
+    SELECT hero_id FROM matches
+    GROUP BY hero_id HAVING COUNT(*) >= 2
+  ),
+  drawn AS (
+    SELECT hero_id FROM matches WHERE result = 'draw'
+  )
+SELECT hero_id FROM authors
+INTERSECT
+SELECT hero_id FROM busy
+EXCEPT
+SELECT hero_id FROM drawn
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+
+Name a CTE for what its rows are, such as `scoring` or `authors`, not for the step number, so the final `SELECT` reads as a sentence.
+
+Set view: [Define the set, then write the query](/posts/sql-as-set-theory/#define-the-set-then-write-the-query), [Union, intersection and difference](/posts/sql-as-set-theory/#union-intersection-and-difference), [Window functions: group without collapsing](/posts/sql-as-set-theory/#window-functions-group-without-collapsing).
+
+## Inline or materialize a CTE
+
+A CTE looks like a table, and it is easy to treat it as one. It is not stored anywhere: it exists while its statement runs, the next statement that needs it computes it again, and an index cannot be created on it. When several statements need the same intermediate rows, or the rows need an index, use a temporary table, compared in [CTE, subquery, view or temporary table](#cte-subquery-view-or-temporary-table).
+
+A database can inline a CTE, substituting the CTE's query wherever the name appears, as if it were a subquery written there, and optimize the whole statement together. Or it can materialize it: run the CTE's query first, keep the rows, and read them at each reference.
+
+```diagram
+title "Inlined and materialized CTE, filtered to one hero"
+direction right
+group inlined "Inlined" tone success {
+  i1 "Scan matches" detail "hero_id = 1 applied here"
+  i2 "Group" detail "one hero's rows"
+}
+group materialized "Materialized" tone warning {
+  m1 "Scan matches" detail "every row"
+  m2 "Group" detail "every hero"
+  m3 "Filter" detail "hero_id = 1 applied here"
+}
+i1 -> i2
+m1 -> m2
+m2 -> m3
+```
+
+Inlining lets a condition from the outer query reach the CTE's table; materializing computes the rows once however many references there are.
+
+Postgres before version 12 always materialized. Its manual for version 11 says the optimizer is less able to push restrictions from the parent query down into a `WITH` query than into an ordinary subquery, so a CTE was an optimization fence. Since version 12, a `WITH` query that is not recursive and has no side effects is folded into the parent query when the parent references it once, and computed separately when it references it more than once. Two keywords override the default: `MATERIALIZED` forces the separate computation, and `NOT MATERIALIZED` forces the inlining. The difference shows in the plan, shown here trimmed to its shape. A CTE referenced once, filtered to one hero:
+
+```sql
+EXPLAIN
+WITH scoring AS (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  GROUP BY hero_id
+)
+SELECT * FROM scoring WHERE hero_id = 1;
+```
+
+```text
+GroupAggregate
+  Group Key: matches.hero_id
+  ->  Seq Scan on matches
+        Filter: (hero_id = 1)
+```
+
+There is no CTE in the plan: the condition `hero_id = 1` reached the scan of `matches`, so only Dorinthea's matches are grouped. With `MATERIALIZED`, the fence is back:
+
+```sql
+EXPLAIN
+WITH scoring AS MATERIALIZED (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  GROUP BY hero_id
+)
+SELECT * FROM scoring WHERE hero_id = 1;
+```
+
+```text
+CTE Scan on scoring
+  Filter: (hero_id = 1)
+  CTE scoring
+    ->  HashAggregate
+          Group Key: matches.hero_id
+          ->  Seq Scan on matches
+```
+
+Now the CTE groups every match, and the filter runs afterwards on the grouped rows. On eight matches that is nothing; on a table of millions with an index on `hero_id`, it is the difference between reading one hero's rows and reading all of them.
+
+A CTE referenced twice can be computed once or twice. In Postgres's plan for the above-average query, the CTE appears once and is scanned at both references:
+
+```text
+CTE Scan on scoring
+  Filter: ((scored)::numeric > $1)
+  CTE scoring
+    ->  HashAggregate
+          Group Key: matches.hero_id
+          ->  Seq Scan on matches
+  InitPlan 2 (returns $1)
+    ->  Aggregate
+          ->  CTE Scan on scoring scoring_1
+```
+
+With `NOT MATERIALIZED`, the query is substituted at both references:
+
+```text
+HashAggregate
+  Group Key: matches.hero_id
+  Filter: ((sum(matches.points))::numeric > $0)
+  InitPlan 1 (returns $0)
+    ->  Aggregate
+          ->  HashAggregate
+                Group Key: matches_1.hero_id
+                ->  Seq Scan on matches matches_1
+  ->  Seq Scan on matches
+```
+
+Now `matches` is scanned and grouped twice, once for the rows and once, as `matches_1`, for the average. Which is cheaper depends on the query: computing twice lets each copy use the conditions around it, computing once saves the repeated work. The plan is the place to check.
+
+SQLite accepts the same two keywords since version 3.35.0, and its release notes say that version also changed the default for a CTE used more than once to materialized. With `MATERIALIZED`, SQLite computes the CTE into an ephemeral table and gives up flattening and push-down; its documentation calls that loss a feature, an optimization fence to use on purpose. `NOT MATERIALIZED` substitutes the CTE as a subquery at every use, though the planner may still materialize it. The SQLite documentation recommends using neither keyword without a compelling reason. A hint changes how the query runs, never its rows:
+
+```sql
+WITH scoring AS MATERIALIZED (
+  SELECT hero_id, SUM(points) AS scored
+  FROM matches
+  GROUP BY hero_id
+)
+SELECT hero_id, scored
+FROM scoring
+WHERE scored > (SELECT AVG(scored) FROM scoring)
+ORDER BY hero_id;
+```
+
+| hero_id | scored |
+| --- | --- |
+| 1 | 95 |
+| 3 | 90 |
+
+MySQL has had CTEs since 8.0, recursive and not. Its manual documents no `MATERIALIZED` keyword; its optimizer merges a CTE into the outer query or materializes it, as it does a subquery in `FROM` or a view, computes a materialized CTE once per query however many references there are, and takes the `MERGE` and `NO_MERGE` optimizer hints per reference.
+
+Write a CTE for the reading order, check the plan when the query is slow, and add a hint only when the plan shows the wrong strategy.
+
+## Walk a tree with WITH RECURSIVE
+
+Card types sit inside each other: a card is an action or equipment, an action is an attack or a non-attack, an attack can be an arrow. The sample tables get one more table for this, where each row names its parent, and the top-level type has none:
+
+```sql
+CREATE TABLE card_types (
+  id INTEGER PRIMARY KEY,
+  parent_id INTEGER REFERENCES card_types (id),
+  name TEXT NOT NULL
+);
+```
+
+**card_types**
+
+| id | parent_id | name |
+| --- | --- | --- |
+| 1 | NULL | Card |
+| 2 | 1 | Action |
+| 3 | 2 | Attack |
+| 4 | 2 | Non-attack |
+| 5 | 1 | Equipment |
+| 6 | 3 | Arrow |
+
+```diagram
+title "The card_types tree"
+direction down
+card "Card" tone primary
+action "Action"
+equipment "Equipment"
+attack "Attack"
+nonattack "Non-attack"
+arrow "Arrow"
+card -> action
+card -> equipment
+action -> attack
+action -> nonattack
+attack -> arrow
+```
+
+Listing every type under Card takes one join per level, and the number of levels is not known in advance. A recursive CTE refers to its own name, so it can repeat the join until nothing is left:
+
+```sql
+WITH RECURSIVE tree (id, name, depth, path) AS (
+  SELECT id, name, 0, name
+  FROM card_types
+  WHERE id = 1
+  UNION ALL
+  SELECT t.id, t.name, p.depth + 1, p.path || ' > ' || t.name
+  FROM card_types t
+  JOIN tree p ON t.parent_id = p.id
+)
+SELECT id, name, depth, path
+FROM tree
+ORDER BY path;
+```
+
+| id | name | depth | path |
+| --- | --- | --- | --- |
+| 1 | Card | 0 | Card |
+| 2 | Action | 1 | Card > Action |
+| 3 | Attack | 2 | Card > Action > Attack |
+| 6 | Arrow | 3 | Card > Action > Attack > Arrow |
+| 4 | Non-attack | 2 | Card > Action > Non-attack |
+| 5 | Equipment | 1 | Card > Equipment |
+
+The body of a recursive CTE has two parts joined by `UNION ALL`. The first, the anchor, does not mention `tree` and gives the starting rows. The second, the recursive part, joins `card_types` to `tree` and gives the next level. The Postgres manual describes the evaluation in these steps:
+
+1. Run the anchor. It returns Card, at depth 0. The row goes into the result and into a working table.
+2. Run the recursive part on the working table. `tree` now means only the working table, Card, so the join finds its children: Action and Equipment, at depth 1. They go into the result and replace the working table.
+3. Repeat. The children of Action and Equipment are Attack and Non-attack, at depth 2. The child of those is Arrow, at depth 3.
+4. Stop on an empty working table. Arrow has no children, so the next run returns no rows and the recursion ends.
+
+Step through it one run at a time:
+
+<RecursionDemo client:visible />
+
+SQLite documents a different procedure, a queue that the recursive part reads one row at a time, and it returns the same rows here. The `path` column builds each type's chain of names as the recursion goes down, and ordering by it lists every type under its parent. Without an `ORDER BY`, the rows come back in no promised order, as on any query.
+
+The same pattern walks up instead, from a type to the top, for a breadcrumb:
+
+```sql
+WITH RECURSIVE ancestors (id, parent_id, name, depth) AS (
+  SELECT id, parent_id, name, 0
+  FROM card_types
+  WHERE id = 6
+  UNION ALL
+  SELECT t.id, t.parent_id, t.name, a.depth + 1
+  FROM card_types t
+  JOIN ancestors a ON t.id = a.parent_id
+)
+SELECT name, depth
+FROM ancestors
+ORDER BY depth DESC;
+```
+
+| name | depth |
+| --- | --- |
+| Card | 3 |
+| Action | 2 |
+| Attack | 1 |
+| Arrow | 0 |
+
+The recursion ends only when a level returns no rows. If the data has a cycle, say Action's parent set to Arrow by mistake, the walk up from Arrow goes Arrow, Attack, Action, Arrow, Attack, and every level finds another row, so the query never finishes. Replacing `UNION ALL` with `UNION` discards rows that repeat an earlier row, and the Postgres manual suggests it for this, but here every row has a new `depth`, so no row repeats. Guards that do work:
+
+- A depth limit in the recursive part, such as `WHERE t.depth < 20`, which works in every database.
+- The `CYCLE` clause, added in Postgres 14, which marks a row that revisits a key and recurses no further from it.
+- MySQL's `cte_max_recursion_depth`, 1000 by default, which ends a deeper recursion with an error.
+
+Some limits apply to the recursive part. SQLite and MySQL reject aggregate and window functions in it, and MySQL also rejects `GROUP BY`, `ORDER BY` and `DISTINCT` there. Group and rank in the final `SELECT`, after the recursion. MySQL also takes each column's type from the anchor alone, and its manual shows a string that grows in the recursive part cut to the anchor's length in nonstrict mode; a `CAST` in the anchor makes the column wide enough.
+
+Set view: [UNION ALL keeps every row](/posts/sql-as-set-theory/#union-all-keeps-every-row), [A join is a filtered product](/posts/sql-as-set-theory/#a-join-is-a-filtered-product), [Rows have no order](/posts/sql-as-set-theory/#rows-have-no-order).
+
+## Generate a series of rows
+
+A recursive CTE needs no table at all. An anchor of one number and a recursive part that adds 1 count up, and the `WHERE` in the recursive part ends the count:
+
+```sql
+WITH RECURSIVE counter (n) AS (
+  SELECT 1
+  UNION ALL
+  SELECT n + 1 FROM counter WHERE n < 5
+)
+SELECT n FROM counter;
+```
+
+| n |
+| --- |
+| 1 |
+| 2 |
+| 3 |
+| 4 |
+| 5 |
+
+When the recursive part reaches 5, `n < 5` is false, the recursive part returns nothing, and the recursion stops. That makes a series a building block. A chart of matches per day needs a row for every day, but grouping `matches` by date gives no row for a day without matches. Generate the days, then left join the matches to them:
+
+```sql
+WITH RECURSIVE days (day) AS (
+  SELECT '2026-09-01'
+  UNION ALL
+  SELECT date(day, '+1 day')
+  FROM days
+  WHERE day < '2026-09-07'
+)
+SELECT
+  d.day,
+  COUNT(m.id) AS played,
+  COALESCE(SUM(m.points), 0) AS points
+FROM days d
+LEFT JOIN matches m ON m.played_on = d.day
+GROUP BY d.day
+ORDER BY d.day;
+```
+
+| day | played | points |
+| --- | --- | --- |
+| 2026-09-01 | 1 | 30 |
+| 2026-09-02 | 1 | 60 |
+| 2026-09-03 | 1 | 45 |
+| 2026-09-04 | 0 | 0 |
+| 2026-09-05 | 1 | 25 |
+| 2026-09-06 | 0 | 0 |
+| 2026-09-07 | 0 | 0 |
+
+`date(day, '+1 day')` is SQLite's date arithmetic, and the dates are compared as text, which works because the ISO format sorts in date order. The `LEFT JOIN` keeps the days with no match, `COUNT(m.id)` gives them 0, and `COALESCE` turns their `NULL` sum into 0. Postgres has a function for the series, `generate_series`, which returns the same rows:
+
+```sql
+SELECT
+  d.day::date AS day,
+  COUNT(m.id) AS played,
+  COALESCE(SUM(m.points), 0) AS points
+FROM generate_series(
+  DATE '2026-09-01',
+  DATE '2026-09-07',
+  INTERVAL '1 day'
+) AS d (day)
+LEFT JOIN matches m ON m.played_on = d.day
+GROUP BY d.day
+ORDER BY d.day;
+```
+
+| day | played | points |
+| --- | --- | --- |
+| 2026-09-01 | 1 | 30 |
+| 2026-09-02 | 1 | 60 |
+| 2026-09-03 | 1 | 45 |
+| 2026-09-04 | 0 | 0 |
+| 2026-09-05 | 1 | 25 |
+| 2026-09-06 | 0 | 0 |
+| 2026-09-07 | 0 | 0 |
+
+SQLite's core has no `generate_series`: it is a loadable extension compiled into the command-line shell, so a program using the SQLite library cannot count on it. The recursive form runs in all three databases, with each one's date arithmetic in the recursive part.
+
+Set view: [Outer joins: LEFT and FULL](/posts/sql-as-set-theory/#outer-joins-left-and-full), [GROUP BY is a partition](/posts/sql-as-set-theory/#group-by-is-a-partition).
+
+## CTE, subquery, view or temporary table
+
+A subquery, a CTE, a view and a temporary table all hold the rows of an intermediate query. They differ in how long the definition lives, who can reuse it, and whether its rows are stored:
+
+| Form | Lives for | Reuse | Index | Planner | Fits |
+| --- | --- | --- | --- | --- | --- |
+| Subquery | One place in one statement | Written out again for each use | No | Planned with the outer query | A short step used once |
+| CTE | One statement | By name, any number of times in that statement | No | Inlined or computed once; `MATERIALIZED` and `NOT MATERIALIZED` in Postgres 12+ and SQLite 3.35+ | A query of several steps, a result used twice in one statement, recursion |
+| View | In the schema until dropped | By name, from any query | No, a view stores no rows | Its query runs each time the view is referenced | A definition that many queries share |
+| Temporary table | The session, or in Postgres optionally the transaction | From any statement in that session | Yes | A real table with its own rows; Postgres needs a manual `ANALYZE` for statistics | Rows that several statements read, or that need an index |
+
+A view is a named query stored in the schema; the Postgres manual for `CREATE VIEW` says a view is not physically materialized and its query runs every time the view is referenced. A temporary table stores rows: Postgres drops it at the end of the session, or of the transaction with `ON COMMIT DROP`, and SQLite keeps it in a separate temporary database that only the creating connection can see and that is deleted when the connection closes. Because Postgres's autovacuum cannot reach temporary tables, its manual advises running `ANALYZE` on one after filling it, before using it in complex queries.
+
+The scope decides. A step used once inside one query is a subquery, or a CTE when a name makes the query easier to read, as in [Name a subquery with WITH](#name-a-subquery-with-with). Steps that build on each other, a result used twice, and a tree or a series are CTEs. A definition shared by many queries is a view. Rows that several statements read, or that need an index, are a temporary table.
+
+## In short
+
+Most of these recipes are one idea each: ask the database for the shape the screen needs instead of looping in code, aggregate each child table separately so joins do not multiply rows, filter rows with `WHERE` and groups with `HAVING`, number rows with window functions, and give intermediate results names with `WITH`. The sets underneath them are in [SQL as set theory](/posts/sql-as-set-theory/).
