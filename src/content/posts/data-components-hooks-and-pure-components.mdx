@@ -72,7 +72,7 @@ The data component takes the port its read needs, `CardSearcher`, and the query 
 type CardsDataProps = {
   cardSearcher: CardSearcher;
   query: CardQuery;
-  children: (ready: { cards: Card[]; loadMore: () => void }) => ReactNode;
+  children: (ready: { items: Card[]; loadMore: () => void }) => ReactNode;
 };
 
 function CardsData({ cardSearcher, query, children }: CardsDataProps) {
@@ -84,7 +84,7 @@ function CardsData({ cardSearcher, query, children }: CardsDataProps) {
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
     .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
-    .with({ type: 'success' }, ({ items }) => children({ cards: items, loadMore }))
+    .with({ type: 'success' }, ({ items }) => children({ items, loadMore }))
     .exhaustive();
 }
 ```
@@ -92,12 +92,12 @@ function CardsData({ cardSearcher, query, children }: CardsDataProps) {
 The children never see these. A child that received a loading flag would have to decide what to draw while loading, and every screen would decide differently.
 
 ```tsx
-<CardsData cardSearcher={cardRepository} query={query}>
-  {({ cards, loadMore }) => <CardGrid cards={cards} onEnd={loadMore} />}
+<CardsData cardSearcher={cards.cardRepository} query={query}>
+  {({ items, loadMore }) => <CardGrid cards={items} onEnd={loadMore} />}
 </CardsData>
 ```
 
-The page takes `cardRepository` from the container. It satisfies `CardSearcher`, so the page passes it straight in.
+The page takes `cards.cardRepository` from the container. It satisfies `CardSearcher`, so the page passes it straight in.
 
 ## A hook owns UI state for one concern
 

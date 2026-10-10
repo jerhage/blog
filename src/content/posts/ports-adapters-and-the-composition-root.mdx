@@ -129,18 +129,18 @@ const useContainer = () => useContext(ContainerContext);
 
 ```tsx
 function DeckBuilderPage() {
-  const { cardRepository } = useContainer().cards;
+  const { cards } = useContainer();
   const filter = useCardFilter();
 
   return (
-    <CardsData cardSearcher={cardRepository} query={filter.query}>
-      {({ cards, loadMore }) => <CardGrid cards={cards} onEnd={loadMore} />}
+    <CardsData cardSearcher={cards.cardRepository} query={filter.query}>
+      {({ items, loadMore }) => <CardGrid cards={items} onEnd={loadMore} />}
     </CardsData>
   );
 }
 ```
 
-The page passes `cardRepository` where `CardsData` asks for a `CardSearcher`. `CardsData` never learns which adapter it holds.
+The page passes `cards.cardRepository` where `CardsData` asks for a `CardSearcher`. `CardsData` never learns which adapter it holds.
 
 ## What the container exposes
 

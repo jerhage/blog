@@ -69,9 +69,9 @@ page -> data "the repository as a port"
 
 ```tsx
 function CardsPage() {
-  const { cardRepository } = useContainer().cards;
+  const { cards } = useContainer();
 
-  return <CardsData cardSearcher={cardRepository} query={defaultQuery}>{renderGrid}</CardsData>;
+  return <CardsData cardSearcher={cards.cardRepository} query={defaultQuery}>{renderGrid}</CardsData>;
 }
 ```
 

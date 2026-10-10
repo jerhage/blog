@@ -166,7 +166,7 @@ function CardsData({ cardSearcher, query, children }: CardsDataProps) {
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
     .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
-    .with({ type: 'success' }, ({ items }) => children({ cards: items, loadMore }))
+    .with({ type: 'success' }, ({ items }) => children({ items, loadMore }))
     .exhaustive();
 }
 ```
