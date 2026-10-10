@@ -1,0 +1,1065 @@
+---
+title: "SQL as set theory"
+description: A table is a set of rows, and each part of a query is an operation on sets, shown on a small Flesh and Blood card database.
+published: 2026-10-10
+tags:
+  - sql
+  - databases
+---
+
+import SetOperationsDemo from '../../demos/SetOperationsDemo.svelte';
+import JoinDemo from '../../demos/JoinDemo.svelte';
+
+A table is a relation, a set of rows, and each part of a query is an operation on sets: `WHERE` selects, `SELECT` projects, a join filters a product, `EXISTS` and `NOT EXISTS` keep the rows with and without a match, and `GROUP BY` partitions. The companion post, [SQL patterns](/posts/sql-patterns/), uses the same tables for recipes.
+
+## Tables as relations
+
+In 1970 E. F. Codd described a way to store data that rests on set theory. Its unit is the relation: a set of tuples, each holding one value per named attribute. SQL calls them a table, its rows and its columns. A query takes relations in and gives a relation back, so one query can feed the next.
+
+The examples use three small tables from a card app: heroes, the cards that belong to a hero, and the matches a hero played.
+
+```sql
+CREATE TABLE heroes (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE cards (
+  id INTEGER PRIMARY KEY,
+  hero_id INTEGER REFERENCES heroes (id),
+  name TEXT NOT NULL,
+  format TEXT NOT NULL,
+  added_on DATE NOT NULL
+);
+
+CREATE TABLE matches (
+  id INTEGER PRIMARY KEY,
+  hero_id INTEGER NOT NULL REFERENCES heroes (id),
+  points INTEGER NOT NULL,
+  result TEXT NOT NULL,
+  played_on DATE NOT NULL
+);
+```
+
+**heroes**
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 2 | Katsu |
+| 3 | Bravo |
+| 4 | Oldhim |
+
+**cards**
+
+| id | hero_id | name | format | added_on |
+| --- | --- | --- | --- | --- |
+| 101 | 1 | Warrior's Valor | cc | 2026-09-01 |
+| 102 | 1 | Driving Blade | blitz | 2026-09-05 |
+| 103 | 1 | Overpower | cc | 2026-09-20 |
+| 104 | 2 | Head Jab | cc | 2026-09-18 |
+| 105 | 3 | Chokeslam | blitz | 2026-09-10 |
+| 106 | NULL | Sink Below | blitz | 2026-09-12 |
+
+**matches**
+
+| id | hero_id | points | result | played_on |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 30 | won | 2026-09-01 |
+| 2 | 1 | 45 | lost | 2026-09-03 |
+| 3 | 1 | 20 | won | 2026-09-10 |
+| 4 | 2 | 60 | draw | 2026-09-02 |
+| 5 | 2 | 15 | lost | 2026-09-12 |
+| 6 | 3 | 25 | won | 2026-09-05 |
+| 7 | 3 | 25 | won | 2026-09-10 |
+| 8 | 3 | 40 | lost | 2026-09-14 |
+
+A few rows are there on purpose. Oldhim has no cards and no matches. Card 106 has no hero: its `hero_id` is `NULL`, the way a generic card looks. Bravo has two matches with the same points.
+
+Every result is the output of the query on SQLite 3.51 against exactly these rows. Where Postgres behaves differently, the text says so.
+
+## Duplicates: SQL works on bags
+
+A set holds each element once, so `{1, 1, 2}` is the same set as `{1, 2}`. A table with no unique constraint can hold the same row twice, and a query often returns repeats: list the heroes of the `cc` cards and Dorinthea appears once per card.
+
+SQL works on bags, also called multisets: collections where an element can occur more than once and the count matters. Most set intuition holds, but not all of it. Let R, S and T each hold the single row 1:
+
+| Expression | As sets | As bags |
+| --- | --- | --- |
+| Remove T from the union of R and S | empty | one row |
+| Union of (R without T) and (S without T) | empty | empty |
+
+For sets the two are the same; for bags the first leaves one copy of 1 and the second leaves none. Postgres, which has the bag versions as `UNION ALL` and `EXCEPT ALL`, returns one row for the first and none for the second.
+
+`DISTINCT` turns a result back into a set, and `UNION`, `INTERSECT` and `EXCEPT` remove repeats by default.
+
+## NULL and three-valued logic
+
+`NULL` stands for a missing value. Comparing anything with it is neither true nor false but unknown, which SQL also writes as `NULL`. So SQL logic has three values, and even `NULL = NULL` is unknown. The test is `IS NULL`.
+
+```sql
+SELECT
+  NULL = NULL AS equal,
+  NULL <> 1 AS not_one,
+  NULL IS NULL AS is_null;
+```
+
+| equal | not_one | is_null |
+| --- | --- | --- |
+| NULL | NULL | 1 |
+
+SQLite prints true as `1`. Postgres returns the same row as `null`, `null` and `true`.
+
+`WHERE` keeps a row only when its condition is true. Unknown is dropped exactly like false. Follow one row:
+
+1. Ask for the cards not belonging to Dorinthea, whose id is 1: `hero_id <> 1`.
+2. Card 106 has a `NULL` hero, so its condition is `NULL <> 1`, which is unknown.
+3. Unknown is not true, so `WHERE` drops card 106, although Dorinthea does not own it.
+
+```sql
+SELECT id, hero_id, name
+FROM cards
+WHERE hero_id <> 1
+ORDER BY id;
+```
+
+| id | hero_id | name |
+| --- | --- | --- |
+| 104 | 2 | Head Jab |
+| 105 | 3 | Chokeslam |
+
+`IS DISTINCT FROM` compares the way most people expect: two missing values are not distinct, and a missing value is distinct from 1. Postgres has it, and SQLite since 3.39.0. Writing `hero_id <> 1 OR hero_id IS NULL` works everywhere.
+
+```sql
+SELECT id, hero_id, name
+FROM cards
+WHERE hero_id IS DISTINCT FROM 1
+ORDER BY id;
+```
+
+| id | hero_id | name |
+| --- | --- | --- |
+| 104 | 2 | Head Jab |
+| 105 | 3 | Chokeslam |
+| 106 | NULL | Sink Below |
+
+Wherever a column can be `NULL`, decide what a missing value should do in each condition and write that case out.
+
+## Rows have no order
+
+A set has no first element, and a table has no first row. Without `ORDER BY`, SQLite documents the order as undefined, and Postgres returns rows in whatever order is fastest to produce. That order can change when the data grows or an index is added. Every query here ends with `ORDER BY`, which is also why the results can be shown at all.
+
+Sorting meets `NULL` too, and databases disagree. SQLite treats `NULL` as smaller than every value, so it sorts first. Postgres treats it as larger, so it sorts last. `NULLS FIRST` and `NULLS LAST` set it explicitly in both.
+
+```sql
+SELECT id, hero_id
+FROM cards
+ORDER BY hero_id, id;
+```
+
+| id | hero_id |
+| --- | --- |
+| 106 | NULL |
+| 101 | 1 |
+| 102 | 1 |
+| 103 | 1 |
+| 104 | 2 |
+| 105 | 3 |
+
+Postgres returns the same rows with card 106 at the bottom.
+
+## Selection: WHERE
+
+Selection keeps the rows that satisfy a condition. In set-builder notation, and in relational algebra where σ (sigma) is selection:
+
+```text
+{ c ∈ cards | c.format = 'cc' }
+
+σ format = 'cc' (cards)
+```
+
+```diagram
+title "Selection drops rows and keeps every column"
+direction right
+group input "cards" {
+  c101 "101 cc" tone primary
+  c102 "102 blitz"
+  c103 "103 cc" tone primary
+  c104 "104 cc" tone primary
+  c105 "105 blitz"
+  c106 "106 blitz"
+}
+group output "σ format = cc" {
+  o101 "101 cc" tone primary
+  o103 "103 cc" tone primary
+  o104 "104 cc" tone primary
+}
+c101 -> o101
+c103 -> o103
+c104 -> o104
+```
+
+```sql
+SELECT *
+FROM cards
+WHERE format = 'cc'
+ORDER BY id;
+```
+
+| id | hero_id | name | format | added_on |
+| --- | --- | --- | --- | --- |
+| 101 | 1 | Warrior's Valor | cc | 2026-09-01 |
+| 103 | 1 | Overpower | cc | 2026-09-20 |
+| 104 | 2 | Head Jab | cc | 2026-09-18 |
+
+## Projection: SELECT and DISTINCT
+
+Projection keeps some columns. Relational algebra writes it π (pi); SQL writes it as the list after `SELECT`. Most queries do both: the heroes of the `cc` cards are
+
+```text
+π hero_id ( σ format = 'cc' (cards) )
+```
+
+```diagram
+title "Projecting three rows onto one column gives a repeat; DISTINCT removes it"
+direction right
+group cc "cc cards" {
+  p101 "card 101" tone primary
+  p103 "card 103" tone primary
+  p104 "card 104" tone primary
+}
+group pi "π hero_id" {
+  v1a "1" tone primary
+  v1b "1" tone primary
+  v2 "2" tone primary
+}
+group dist "DISTINCT" {
+  d1 "1" tone primary
+  d2 "2" tone primary
+}
+p101 -> v1a
+p103 -> v1b
+p104 -> v2
+v1a -> d1
+v1b -> d1
+v2 -> d2
+```
+
+```sql
+SELECT hero_id
+FROM cards
+WHERE format = 'cc'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 1 |
+| 2 |
+
+In relational algebra a projection is a set, so the repeated 1 would vanish. SQL keeps it, and `DISTINCT` applies to the whole output row:
+
+```sql
+SELECT DISTINCT hero_id
+FROM cards
+WHERE format = 'cc'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 2 |
+
+A `SELECT` list can also compute new values, such as a sum or a label, which goes past the algebra's projection. [SQL patterns](/posts/sql-patterns/#return-exactly-what-the-screen-shows) uses that to build a result for one screen.
+
+## The Cartesian product
+
+The Cartesian product of two sets pairs every element of the first with every element of the second. For relations, each pair is a row with the columns of both. Four heroes and six cards give 4 × 6 = 24 rows, most of them meaningless.
+
+```sql
+SELECT COUNT(*) AS pairs
+FROM heroes
+CROSS JOIN cards;
+```
+
+| pairs |
+| --- |
+| 24 |
+
+Every pair as a grid, with ● where `cards.hero_id = heroes.id` and · elsewhere:
+
+| | 101 | 102 | 103 | 104 | 105 | 106 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Dorinthea | ● | ● | ● | · | · | · |
+| Katsu | · | · | · | ● | · | · |
+| Bravo | · | · | · | · | ● | · |
+| Oldhim | · | · | · | · | · | · |
+
+The product is rarely what anyone wants, and it grows as the product of the two sizes: two tables of 10,000 rows give 100 million pairs. Its use is as the starting point for a join.
+
+## A join is a filtered product
+
+Selecting from the product the pairs that belong together gives a join, written ⋈ (a bowtie) in relational algebra and defined as exactly this:
+
+```text
+heroes ⋈ heroes.id = cards.hero_id cards
+  = σ heroes.id = cards.hero_id (heroes × cards)
+```
+
+Both spellings in SQL return the same five rows, the ● cells above:
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+CROSS JOIN cards c
+WHERE c.hero_id = h.id
+ORDER BY c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 102 | Driving Blade |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | 105 | Chokeslam |
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+JOIN cards c ON c.hero_id = h.id
+ORDER BY c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 102 | Driving Blade |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | 105 | Chokeslam |
+
+```diagram
+title "Inner join: a line for each matching pair"
+direction right
+group heroes "heroes" {
+  h1 "Dorinthea" tone primary
+  h2 "Katsu" tone primary
+  h3 "Bravo" tone primary
+  h4 "Oldhim"
+}
+group cards "cards" {
+  c101 "101 Warrior's Valor" tone primary
+  c102 "102 Driving Blade" tone primary
+  c103 "103 Overpower" tone primary
+  c104 "104 Head Jab" tone primary
+  c105 "105 Chokeslam" tone primary
+  c106 "106 Sink Below"
+}
+h1 -- c101
+h1 -- c102
+h1 -- c103
+h2 -- c104
+h3 -- c105
+```
+
+An inner join returns one row per line. Oldhim and card 106 have no line and are not in the result.
+
+"Filtered product" describes what a join means, not how a database runs it. It can find the matches through an index, a hash table or sorted inputs. Postgres 14's `EXPLAIN` showed the same plan for both queries, a `Hash Join` that loads the heroes into a hash table and looks up each card's `hero_id` in it.
+
+The result is a set of pairs, not of heroes. Dorinthea has three cards, so she appears three times. That is the point of a join when the query needs the columns of both sides, and a source of wrong counts when it does not: [Count from two child tables](/posts/sql-patterns/#count-from-two-child-tables) shows the numbers it can multiply.
+
+Pick a join type and watch which rows come from where:
+
+<JoinDemo client:visible />
+
+## Outer joins: LEFT and FULL
+
+An inner join drops every row that has no partner. A left join keeps every row of the left table, and where it has no partner the right side's columns are `NULL`. Oldhim comes back with no card:
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+ORDER BY h.id, c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 102 | Driving Blade |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | 105 | Chokeslam |
+| Oldhim | NULL | NULL |
+
+```diagram
+title "Left join: every hero is kept"
+direction right
+group heroes "heroes" {
+  h1 "Dorinthea" tone primary
+  h2 "Katsu" tone primary
+  h3 "Bravo" tone primary
+  h4 "Oldhim" tone primary
+}
+group cards "cards" {
+  c101 "101 Warrior's Valor" tone primary
+  c102 "102 Driving Blade" tone primary
+  c103 "103 Overpower" tone primary
+  c104 "104 Head Jab" tone primary
+  c105 "105 Chokeslam" tone primary
+  c106 "106 Sink Below"
+}
+h1 -- c101
+h1 -- c102
+h1 -- c103
+h2 -- c104
+h3 -- c105
+```
+
+A full join keeps the unmatched rows of both sides: Oldhim with no card, and card 106 with no hero.
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+FULL JOIN cards c ON c.hero_id = h.id
+ORDER BY h.id, c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| NULL | 106 | Sink Below |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 102 | Driving Blade |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | 105 | Chokeslam |
+| Oldhim | NULL | NULL |
+
+```diagram
+title "Full join: both sides keep their unmatched rows"
+direction right
+group heroes "heroes" {
+  h1 "Dorinthea" tone primary
+  h2 "Katsu" tone primary
+  h3 "Bravo" tone primary
+  h4 "Oldhim" tone primary
+}
+group cards "cards" {
+  c101 "101 Warrior's Valor" tone primary
+  c102 "102 Driving Blade" tone primary
+  c103 "103 Overpower" tone primary
+  c104 "104 Head Jab" tone primary
+  c105 "105 Chokeslam" tone primary
+  c106 "106 Sink Below" tone primary
+}
+h1 -- c101
+h1 -- c102
+h1 -- c103
+h2 -- c104
+h3 -- c105
+```
+
+SQLite has supported `RIGHT` and `FULL OUTER JOIN` since 3.39.0. MySQL has `LEFT` and `RIGHT` joins and no `FULL` join. Postgres sorts this result with card 106 last, because its `h.id` is `NULL` and Postgres sorts `NULL` last.
+
+Outer joins are an extension; the classical relational algebra does not include them. They have one subtlety: the `NULL` rows are added after the `ON` condition and before `WHERE`. Ask for every hero with their `cc` cards, and put the format test in `WHERE`:
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+WHERE c.format = 'cc'
+ORDER BY h.id, c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+
+Bravo's only card is `blitz`, so his joined row fails the test; Oldhim's row has `NULL` for the format, so its test is unknown and dropped as well. The left join has become an inner join. Moved into `ON`, the test decides which cards match, and every hero stays:
+
+```sql
+SELECT h.name, c.id AS card_id, c.name AS card
+FROM heroes h
+LEFT JOIN cards c
+  ON c.hero_id = h.id
+  AND c.format = 'cc'
+ORDER BY h.id, c.id;
+```
+
+| name | card_id | card |
+| --- | --- | --- |
+| Dorinthea | 101 | Warrior's Valor |
+| Dorinthea | 103 | Overpower |
+| Katsu | 104 | Head Jab |
+| Bravo | NULL | NULL |
+| Oldhim | NULL | NULL |
+
+## Semi-joins: EXISTS and IN
+
+Often the question is not which pairs match but which heroes have a match. The join answers with repeats, one row per `cc` card:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+JOIN cards c ON c.hero_id = h.id
+WHERE c.format = 'cc'
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 1 | Dorinthea |
+| 2 | Katsu |
+
+The set the question describes is
+
+```text
+{ h ∈ heroes | ∃ c ∈ cards : c.hero_id = h.id ∧ c.format = 'cc' }
+```
+
+∃ reads "there exists". This is a semi-join, written ⋉: it keeps each row of the left relation that has at least one partner on the right, once, with only the left side's columns. SQL writes the ∃ almost word for word as `EXISTS`:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE EXISTS (
+  SELECT 1
+  FROM cards c
+  WHERE c.hero_id = h.id
+    AND c.format = 'cc'
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 2 | Katsu |
+
+```diagram
+title "Semi-join: heroes with a cc card, the cards only consulted"
+direction right
+group heroes "heroes" {
+  h1 "Dorinthea" tone primary
+  h2 "Katsu" tone primary
+  h3 "Bravo"
+  h4 "Oldhim"
+}
+group cards "cards" {
+  c101 "101 Warrior's Valor" tone accent
+  c102 "102 Driving Blade"
+  c103 "103 Overpower" tone accent
+  c104 "104 Head Jab" tone accent
+  c105 "105 Chokeslam"
+  c106 "106 Sink Below"
+}
+h1 -- c101
+h1 -- c103
+h2 -- c104
+```
+
+A semi-join consults the right side (the `cc` cards, in the accent colour) and returns only the left rows that have a line.
+
+The subquery refers to `h.id` from the outer query, which makes it correlated: it reads as "for this hero, does a matching card exist". It is still one statement sent to the database once. Postgres 14's `EXPLAIN` showed a single `Hash Semi Join` for it.
+
+`IN` with a subquery asks the same thing, and Postgres 14 planned it the same way:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE h.id IN (
+  SELECT c.hero_id
+  FROM cards c
+  WHERE c.format = 'cc'
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+| 2 | Katsu |
+
+Why `SELECT 1`? `EXISTS` depends only on whether the subquery returns a row, so the select list is never read. The Postgres documentation calls `EXISTS(SELECT 1 WHERE ...)` a common coding convention. `SELECT *` or `SELECT NULL` give the same answer; `1` tells the reader the columns do not matter.
+
+## Anti-joins: NOT EXISTS
+
+The opposite question, heroes with no cards at all, is the set
+
+```text
+{ h ∈ heroes | ∄ c ∈ cards : c.hero_id = h.id }
+```
+
+∄ reads "there is no". This is an anti-join, written ▷: keep each left row that has no partner on the right. SQL writes it as `NOT EXISTS`:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM cards c
+  WHERE c.hero_id = h.id
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 4 | Oldhim |
+
+```diagram
+title "Anti-join: heroes with no line"
+direction right
+group heroes "heroes" {
+  h1 "Dorinthea"
+  h2 "Katsu"
+  h3 "Bravo"
+  h4 "Oldhim" tone primary
+}
+group cards "cards" {
+  c101 "101 Warrior's Valor"
+  c102 "102 Driving Blade"
+  c103 "103 Overpower"
+  c104 "104 Head Jab"
+  c105 "105 Chokeslam"
+  c106 "106 Sink Below"
+}
+h1 -- c101
+h1 -- c102
+h1 -- c103
+h2 -- c104
+h3 -- c105
+```
+
+An anti-join keeps the left rows with no line. Only Oldhim has none.
+
+A left join followed by a test for the missing side gives the same set, using the `NULL`s the outer join adds:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+LEFT JOIN cards c ON c.hero_id = h.id
+WHERE c.id IS NULL
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 4 | Oldhim |
+
+The tested column must be one that cannot be `NULL` in a real match, such as the right table's primary key. Postgres 14 planned `NOT EXISTS` on these tables as a `Hash Anti Join`.
+
+## NOT IN meets a NULL
+
+`NOT IN` looks like the obvious third way to write the anti-join. On these tables it returns nothing at all:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE h.id NOT IN (
+  SELECT c.hero_id
+  FROM cards c
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| _no rows_ | |
+
+The subquery lists every card's `hero_id`: 1, 1, 1, 2, 3 and, for card 106, `NULL`. Follow Oldhim through the condition:
+
+1. `4 NOT IN (1, 1, 1, 2, 3, NULL)` means 4 differs from every value: `4 <> 1 AND … AND 4 <> 3 AND 4 <> NULL`.
+2. Every comparison with a real id is true. The last one, `4 <> NULL`, is unknown.
+3. True AND unknown is unknown, so the whole condition is unknown.
+4. `WHERE` keeps only true, so Oldhim is dropped. Dorinthea, Katsu and Bravo each equal a value in the list, so their conditions are false. No row is left.
+
+The Postgres documentation states the rule: when no right-hand value is equal and at least one is `NULL`, the result of `NOT IN` is null, not true. SQLite returns the same empty result. A single hero-less card anywhere in the table empties the answer.
+
+`NOT EXISTS` does not have this failure: for card 106 its condition `c.hero_id = h.id` is unknown, so that card is simply not a match, and the other cards decide. Filtering the `NULL`s out of the subquery also fixes `NOT IN`:
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE h.id NOT IN (
+  SELECT c.hero_id
+  FROM cards c
+  WHERE c.hero_id IS NOT NULL
+)
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 4 | Oldhim |
+
+On these tables, Postgres 14 also planned `NOT IN` differently: as a filter over a hashed subquery rather than an anti-join, since the two do not mean the same thing once a `NULL` is possible. Write anti-joins as `NOT EXISTS`, and use `NOT IN` only with a list that cannot contain `NULL`.
+
+## Union, intersection and difference
+
+These combine two sets of the same kind of element. In SQL both sides must return the same number of columns with compatible types. Take two lists of hero ids: A, the heroes of the `cc` cards, and B, the heroes with a won match.
+
+```sql
+SELECT hero_id
+FROM cards
+WHERE format = 'cc'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 1 |
+| 2 |
+
+```sql
+SELECT hero_id
+FROM matches
+WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 1 |
+| 3 |
+| 3 |
+
+As sets, A is `{1, 2}` and B is `{1, 3}`. Dorinthea (1) is in both, Katsu (2) only in A, Bravo (3) only in B, and Oldhim (4) in neither.
+
+| Hero | In A | In B | A ∪ B | A ∩ B | A \ B | B \ A |
+| --- | --- | --- | --- | --- | --- | --- |
+| Dorinthea (1) | yes | yes | yes | yes | no | no |
+| Katsu (2) | yes | no | yes | no | yes | no |
+| Bravo (3) | no | yes | yes | no | no | yes |
+| Oldhim (4) | no | no | no | no | no | no |
+
+Union, A ∪ B, holds what is in either: "A or B".
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+UNION
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 2 |
+| 3 |
+
+Intersection, A ∩ B, holds what is in both: "A and B".
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+INTERSECT
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+
+Difference, A \ B, holds what is in A and not in B: "A but not B". Unlike the other two, it changes when the sides swap.
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+EXCEPT
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 2 |
+
+```sql
+SELECT hero_id FROM matches WHERE result = 'won'
+EXCEPT
+SELECT hero_id FROM cards WHERE format = 'cc'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 3 |
+
+Oldhim, in neither list, is the part of the heroes outside both circles of the usual Venn picture: the heroes minus the union. That picture is also a common way to draw joins, and it misleads there. A Venn diagram shows which elements are kept; a join builds new rows from pairs, and Dorinthea's three cards become three rows, which no circle shows. The pairs diagrams above are the honest ones for joins.
+
+Choose an operator and see which list each result row comes from:
+
+<SetOperationsDemo client:visible />
+
+Some databases, Oracle among them, call `EXCEPT` `MINUS`. MySQL added `INTERSECT` and `EXCEPT` in 8.0.31.
+
+## UNION ALL keeps every row
+
+The three operators return sets: they remove duplicate rows, including duplicates from one side alone. A held Dorinthea twice and B held her twice, and the union holds her once. For this purpose two `NULL`s count as equal.
+
+`UNION ALL` is the bag version. It appends one result to the other and removes nothing:
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+UNION ALL
+SELECT hero_id FROM matches WHERE result = 'won'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+| 1 |
+| 1 |
+| 1 |
+| 2 |
+| 3 |
+| 3 |
+
+Removing duplicates takes a sort or a hash over the whole result, so when the two sides cannot overlap, or repeats are wanted, `UNION ALL` does less work; the Postgres manual says to use `ALL` when you can. Postgres also has `INTERSECT ALL` and `EXCEPT ALL`, which keep counts; SQLite rejects both with a syntax error.
+
+## GROUP BY is a partition
+
+A partition of a set splits it into groups so that every element lands in exactly one group. `GROUP BY hero_id` partitions the matches by hero, and an aggregate function reduces each group to one value: `COUNT` its size, `SUM`, `AVG`, `MIN` and `MAX` its values. Each group becomes one row.
+
+```diagram
+title "Eight matches, three groups, three result rows"
+direction right
+group g1 "hero_id = 1" tone primary {
+  m1 "#1 · 30"
+  m2 "#2 · 45"
+  m3 "#3 · 20"
+}
+r1 "3 matches" detail "scored 95" tone accent
+m1 -> r1
+group g2 "hero_id = 2" tone primary {
+  m4 "#4 · 60"
+  m5 "#5 · 15"
+}
+r2 "2 matches" detail "scored 75" tone accent
+m4 -> r2
+group g3 "hero_id = 3" tone primary {
+  m6 "#6 · 25"
+  m7 "#7 · 25"
+  m8 "#8 · 40"
+}
+r3 "3 matches" detail "scored 90" tone accent
+m6 -> r3
+```
+
+Eight matches, three groups, three result rows. Each match is in exactly one group.
+
+```sql
+SELECT
+  hero_id,
+  COUNT(*) AS played,
+  SUM(points) AS scored
+FROM matches
+GROUP BY hero_id
+ORDER BY hero_id;
+```
+
+| hero_id | played | scored |
+| --- | --- | --- |
+| 1 | 3 | 95 |
+| 2 | 2 | 75 |
+| 3 | 3 | 90 |
+
+After grouping, the query has groups, not matches, so a plain `points` in the `SELECT` list would ask for one value from a group that holds several. Postgres rejects it with `column "matches.points" must appear in the GROUP BY clause or be used in an aggregate function`, unless the column depends on the grouping columns, as every column of a table does when its primary key is grouped. SQLite accepts it as a "bare" column and takes the value from one row of the group, which its documentation says is usually undefined; with exactly one `MIN` or `MAX` in the query, the row holding that minimum or maximum.
+
+Oldhim has no matches, so he has no group; a partition of the matches cannot contain an empty group. Rows with a `NULL` key do get one. Grouping the cards by hero puts card 106 in a group whose key is `NULL`, which SQLite sorts first and Postgres last:
+
+```sql
+SELECT hero_id, COUNT(*) AS cards
+FROM cards
+GROUP BY hero_id
+ORDER BY hero_id;
+```
+
+| hero_id | cards |
+| --- | --- |
+| NULL | 1 |
+| 1 | 3 |
+| 2 | 1 |
+| 3 | 1 |
+
+`HAVING` filters the groups after aggregation, as `WHERE` filters rows before it. [Filter rows, then filter groups](/posts/sql-patterns/#filter-rows-then-filter-groups) shows the difference in numbers.
+
+## Window functions: group without collapsing
+
+Sometimes each row needs a value computed over its group while staying a row of its own: each match next to its hero's total, for example. `GROUP BY` cannot do it, because it collapses each group into one row. A window function computes over the same partition and leaves the rows alone. `OVER (PARTITION BY hero_id)` names the partition:
+
+```diagram
+title "The same partitions, every match stays a row"
+direction right
+group g1 "hero_id = 1" tone primary {
+  m1 "#1 · 30" detail "hero_total 95"
+  m2 "#2 · 45" detail "hero_total 95"
+  m3 "#3 · 20" detail "hero_total 95"
+}
+group g2 "hero_id = 2" tone primary {
+  m4 "#4 · 60" detail "hero_total 75"
+  m5 "#5 · 15" detail "hero_total 75"
+}
+group g3 "hero_id = 3" tone primary {
+  m6 "#6 · 25" detail "hero_total 90"
+  m7 "#7 · 25" detail "hero_total 90"
+  m8 "#8 · 40" detail "hero_total 90"
+}
+```
+
+The same three partitions as above. Every match stays a row and gets its partition's total.
+
+```sql
+SELECT
+  id,
+  hero_id,
+  points,
+  SUM(points) OVER (PARTITION BY hero_id) AS hero_total
+FROM matches
+ORDER BY hero_id, id;
+```
+
+| id | hero_id | points | hero_total |
+| --- | --- | --- | --- |
+| 1 | 1 | 30 | 95 |
+| 2 | 1 | 45 | 95 |
+| 3 | 1 | 20 | 95 |
+| 4 | 2 | 60 | 75 |
+| 5 | 2 | 15 | 75 |
+| 6 | 3 | 25 | 90 |
+| 7 | 3 | 25 | 90 |
+| 8 | 3 | 40 | 90 |
+
+Compare with the grouped result: three rows there, eight here, and the totals agree. Adding `ORDER BY` inside `OVER` turns the window into a running computation within each partition, which is how ranking and running totals work ([Keep the top N per group](/posts/sql-patterns/#keep-the-top-n-per-group), [Running totals](/posts/sql-patterns/#running-totals)).
+
+SQLite has had window functions since 3.25.0. The Postgres manual allows them only in the `SELECT` list and in `ORDER BY`, because they logically run after `WHERE`, `GROUP BY` and `HAVING`. To filter on one, compute it in a subquery and filter outside.
+
+## The order a query is evaluated in
+
+A query is written `SELECT` first, but it is not evaluated in that order. The Postgres reference for `SELECT` describes this processing order:
+
+```diagram
+title "The logical order of a query"
+direction down
+sFrom "FROM and JOIN" detail "build the input rows" tone primary
+sWhere "WHERE" detail "keep rows where the condition is true" tone primary
+sGroup "GROUP BY and HAVING" detail "partition, aggregate, keep groups" tone primary
+sSelect "SELECT" detail "compute the output columns, windows" tone primary
+sDistinct "DISTINCT" detail "remove duplicate output rows" tone primary
+sCombine "UNION, INTERSECT, EXCEPT" detail "combine with another query" tone primary
+sOrder "ORDER BY and LIMIT" detail "sort, then cut" tone primary
+sFrom -> sWhere
+sWhere -> sGroup
+sGroup -> sSelect
+sSelect -> sDistinct
+sDistinct -> sCombine
+sCombine -> sOrder
+```
+
+A database may run it differently, as long as the result is the same.
+
+The order explains rules that otherwise look arbitrary. `WHERE` cannot use an aggregate, because groups do not exist yet when it runs. A window function cannot appear in `WHERE` for the same reason. And an alias defined in the `SELECT` list does not exist yet in `WHERE` or `HAVING`: an output column's name can be used in `ORDER BY` and `GROUP BY`, not in `WHERE` or `HAVING`.
+
+```sql
+SELECT hero_id, SUM(points) AS scored
+FROM matches
+GROUP BY hero_id
+HAVING scored >= 50
+ORDER BY hero_id;
+```
+
+| hero_id | scored |
+| --- | --- |
+| 1 | 95 |
+| 2 | 75 |
+| 3 | 90 |
+
+SQLite accepts that query and returns the rows above. Postgres rejects it with `column "scored" does not exist`. Writing `HAVING SUM(points) >= 50` works in both.
+
+## Define the set, then write the query
+
+The set view helps when a question has several conditions. Take "heroes with a `cc` card, at least two matches, and no drawn match". Name each condition as a set of heroes first:
+
+```text
+A = heroes with a cc card
+B = heroes with a drawn match
+C = heroes with at least two matches
+
+result = (A ∩ C) \ B
+```
+
+Then each set becomes a condition on each hero: ∈ A is `EXISTS`, ∉ B is `NOT EXISTS`, ∈ C is a count, and ∩ is `AND`.
+
+```sql
+SELECT h.id, h.name
+FROM heroes h
+WHERE EXISTS (
+  SELECT 1 FROM cards c
+  WHERE c.hero_id = h.id AND c.format = 'cc'
+)
+AND NOT EXISTS (
+  SELECT 1 FROM matches m
+  WHERE m.hero_id = h.id AND m.result = 'draw'
+)
+AND (
+  SELECT COUNT(*) FROM matches m
+  WHERE m.hero_id = h.id
+) >= 2
+ORDER BY h.id;
+```
+
+| id | name |
+| --- | --- |
+| 1 | Dorinthea |
+
+The same definition with the set operators directly, each line one set:
+
+```sql
+SELECT hero_id FROM cards WHERE format = 'cc'
+INTERSECT
+SELECT hero_id FROM matches GROUP BY hero_id HAVING COUNT(*) >= 2
+EXCEPT
+SELECT hero_id FROM matches WHERE result = 'draw'
+ORDER BY hero_id;
+```
+
+| hero_id |
+| --- |
+| 1 |
+
+The order of those lines matters across databases. Postgres and MySQL evaluate `INTERSECT` before `UNION` and `EXCEPT`, while SQLite groups every compound operator from left to right. Written as A `INTERSECT` C `EXCEPT` B, both readings are (A ∩ C) \ B. Written as A `EXCEPT` B `INTERSECT` C, Postgres would compute A \ (B ∩ C) and SQLite (A \ B) ∩ C, which are different sets in general.
+
+Either way, the work went into defining the set. The procedural version (fetch the heroes, loop, fetch each one's cards and matches, check, keep) describes how to find the answer; the query describes the answer, and the database chooses how to find it.
+
+## Operators at a glance
+
+| Idea | Notation | SQL |
+| --- | --- | --- |
+| Keep some rows | σ | `WHERE` |
+| Keep some columns | π | `SELECT` |
+| Bag to set | | `DISTINCT` |
+| Every pair | × | `CROSS JOIN` |
+| Matching pairs | ⋈ | `JOIN … ON` |
+| Keep unmatched rows | ⟕ ⟗ | `LEFT JOIN`, `FULL JOIN` |
+| Has a match | ⋉ | `EXISTS`, `IN` |
+| Has no match | ▷ | `NOT EXISTS` |
+| In either | ∪ | `UNION` |
+| In both | ∩ | `INTERSECT` |
+| In the first only | \ | `EXCEPT` |
+| Append, keep repeats | | `UNION ALL` |
+| Partition and reduce | | `GROUP BY`, `COUNT`, `SUM` |
+| Keep some groups | | `HAVING` |
+| Compute over a group, keep the rows | | `OVER (PARTITION BY …)` |
+
+## In short
+
+A table is a bag of rows. `WHERE` and `SELECT` pick rows and columns, a join is a filtered product, `EXISTS` and `NOT EXISTS` are semi- and anti-joins, `UNION`, `INTERSECT` and `EXCEPT` are the set operators, and `GROUP BY` partitions. `NULL` makes a third truth value, which is why `NOT IN` and outer-join filters behave the way they do. The recipes built on these are in [SQL patterns](/posts/sql-patterns/).
