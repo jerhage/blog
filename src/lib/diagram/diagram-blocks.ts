@@ -7,6 +7,7 @@ import { parseDiagram } from './parse';
 import { parsePacket } from './packet-parse';
 import { renderDiagram, renderPacket, renderSequence } from './render';
 import { parseSequence } from './sequence-parse';
+import { parseSteps } from './steps-parse';
 import type { SourceError } from './tokens';
 
 type BlockOutcome =
@@ -43,6 +44,20 @@ const BLOCK_RENDERERS: Readonly<Record<string, BlockRenderer | undefined>> = {
 	packet: packetHtml,
 };
 
+const STEPS_LANGUAGE = 'steps';
+
+const NEEDS_MDX: SourceError = {
+	kind: 'needs-mdx',
+	line: 0,
+	message: 'A steps block needs JavaScript in the page; use an .mdx file.',
+};
+
+function stepsOutcome(text: string, isMdx: boolean): readonly SourceError[] {
+	if (!isMdx) return [NEEDS_MDX];
+	const parsed = parseSteps(text);
+	return parsed.kind === 'failure' ? parsed.errors : [];
+}
+
 function bodyLineOffset(file: string | undefined, body: string): number {
 	if (file === undefined || !existsSync(file)) return 0;
 	const text = readFileSync(file, 'utf8');
@@ -52,31 +67,49 @@ function bodyLineOffset(file: string | undefined, body: string): number {
 
 function diagramBlocks() {
 	return (factory: { readonly source: string; readonly fileURL: URL | undefined }) => {
-		if (!Object.keys(BLOCK_RENDERERS).some((language) => factory.source.includes(language))) return null;
+		const languages = [...Object.keys(BLOCK_RENDERERS), STEPS_LANGUAGE];
+		if (!languages.some((language) => factory.source.includes(language))) return null;
 		const path = factory.fileURL === undefined ? undefined : fileURLToPath(factory.fileURL);
 		const file = path ?? 'a block';
+		const isMdx = path?.endsWith('.mdx') === true;
 		const frontMatterLines = bodyLineOffset(path, factory.source);
 		let rendered = 0;
+
+		const reject = (language: string, startLine: number | undefined, errors: readonly SourceError[]): never => {
+			const firstLine = frontMatterLines + (startLine ?? 0);
+			const message = errors
+				.map((error) => `${file}:${firstLine + error.line}: ${language}: ${error.message}`)
+				.join('\n');
+			recordDiagramFailure(message);
+			throw new Error(message);
+		};
+
 		return defineMdastPlugin({
 			name: 'diagram-blocks',
 			options: { position: true },
 			async code(node, ctx) {
+				if (node.lang === STEPS_LANGUAGE) {
+					const errors = stepsOutcome(node.value, isMdx);
+					if (errors.length > 0) reject(STEPS_LANGUAGE, node.position?.start.line, errors);
+					ctx.replaceNode(node, {
+						type: 'mdxJsxFlowElement',
+						name: 'Steps',
+						attributes: [{ type: 'mdxJsxAttribute', name: 'source', value: node.value }],
+						children: [],
+					});
+					return;
+				}
 				const renderer = node.lang === undefined || node.lang === null ? undefined : BLOCK_RENDERERS[node.lang];
 				if (renderer === undefined) return;
 				rendered += 1;
 				const outcome = await renderer(node.value, `${node.lang}-${rendered}`);
-				if (outcome.kind === 'failure') {
-					const firstLine = frontMatterLines + (node.position?.start.line ?? 0);
-					const message = outcome.errors
-						.map((error) => `${file}:${firstLine + error.line}: ${node.lang}: ${error.message}`)
-						.join('\n');
-					recordDiagramFailure(message);
-					throw new Error(message);
+				if (outcome.kind === 'failure') reject(node.lang ?? '', node.position?.start.line, outcome.errors);
+				else {
+					ctx.replaceNode(node, {
+						raw: `<div class="${node.lang}-block">${outcome.html}</div>`,
+						mdxExpressions: false,
+					});
 				}
-				ctx.replaceNode(node, {
-					raw: `<div class="${node.lang}-block">${outcome.html}</div>`,
-					mdxExpressions: false,
-				});
 			},
 		});
 	};

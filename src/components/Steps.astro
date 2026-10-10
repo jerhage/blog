@@ -1,0 +1,19 @@
+---
+import { parseSteps } from '../lib/diagram/steps-parse';
+import { layoutSteps } from '../lib/diagram/steps-layout';
+import StepsIsland from './StepsIsland.svelte';
+
+interface Props {
+	source: string;
+}
+
+const parsed = parseSteps(Astro.props.source);
+if (parsed.kind === 'failure') {
+	throw new Error(parsed.errors.map((error) => `steps: ${error.message}`).join('\n'));
+}
+const view = await layoutSteps(parsed.steps);
+---
+
+<div class="steps-block">
+	<StepsIsland view={view} client:visible />
+</div>

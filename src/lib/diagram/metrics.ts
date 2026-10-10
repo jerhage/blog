@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const TYPE_SCALE_FILE = new URL('../../kandan/core/styles/base/primitives.css', import.meta.url);
+const TYPE_SCALE_FILE = join(process.cwd(), 'src/kandan/core/styles/base/primitives.css');
 
 const ROOT_FONT_PX = 16;
 

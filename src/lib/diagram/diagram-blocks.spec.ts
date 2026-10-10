@@ -54,6 +54,16 @@ describe('diagramBlocks', () => {
 		expect(html).not.toContain('<script');
 	});
 
+	it('refuses a steps block in a Markdown file and says to use MDX', async () => {
+		const path = join(mkdtempSync(join(tmpdir(), 'steps-')), 'post.md');
+		const body = '```steps\nsequence\n```\n';
+		writeFileSync(path, body);
+		await expect(
+			markdownToHtml(body, { fileURL: pathToFileURL(path), mdastPlugins: [diagramBlocks()] }),
+		).rejects.toThrow(`${path}:1: steps: A steps block needs JavaScript in the page; use an .mdx file.`);
+		takeDiagramFailures();
+	});
+
 	it('leaves other code blocks untouched', async () => {
 		const html = await render('```bash\nip a\n```');
 		expect(html).toContain('<pre><code class="language-bash">ip a');
