@@ -88,7 +88,7 @@ The invalidation belongs to whoever owns the write, and it runs whatever the out
 | Data | Where it lives | Stale time |
 | --- | --- | --- |
 | Owned cards, saved decks | the device | short: a read is cheap, so it stays accurate |
-| Card search results | a remote API | longer: a request costs, and cards change rarely |
+| Card search results | a remote API | longer: a request goes over the network, and cards change rarely |
 | The current filter | UI state | not a query at all |
 
 A read of a local store needs none of the cache's network policies: no retries, no refetch when the tab regains focus. Those are set once for the whole app, and each factory sets only its own stale time.

@@ -196,7 +196,7 @@ Merging the two builders because they return the same type changes one caller's 
 
 The grid draws a thumbnail, a name and a kind. A full `Card` has more.
 
-| Approach | What it costs |
+| Approach | Result |
 | --- | --- |
 | A flag on the full lister | one method returns two types, and every fake and caller handles both |
 | `Omit<Card, ...>` | the grid's type follows `Card`, so a new field reaches the grid unless someone omits it |
@@ -212,4 +212,4 @@ type CardSummaryLister = {
 
 ## In short
 
-Narrow ports cost more names and give each consumer and each fake only what it uses. A wide port is one name and ties every consumer to every method. The group type, the manager and the projection are the places the narrow version needs a type of its own.
+Narrow ports add names and give each consumer and each fake only what it uses. A wide port is one name and ties every consumer to every method. The group type, the manager and the projection are the places the narrow version needs a type of its own.

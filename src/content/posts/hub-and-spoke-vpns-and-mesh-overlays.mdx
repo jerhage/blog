@@ -32,7 +32,7 @@ laptop_b <-> hub "tunnel"
 hub <-> server
 ```
 
-This layout is easy to reason about, and it has four known costs.
+This layout is easy to reason about, and it has four known limits.
 
 - Traffic between two clients hairpins: Laptop A sends to the hub, and the hub sends to Laptop B, even when both sit in the same building.
 - The hub carries every byte, so its bandwidth and CPU are the limit for everyone.
