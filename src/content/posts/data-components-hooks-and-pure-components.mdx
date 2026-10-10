@@ -1,0 +1,156 @@
+---
+title: "Data components, hooks and pure components"
+description: Who owns a read, who owns a write, and where UI state lives, shown on a card deck builder.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - svelte
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and Svelte 5; in React the same parts are a render-prop component, a custom hook and a plain component.
+
+## Two kinds of state
+
+A deck builder screen holds two different things. Boundary state is everything about talking to storage: waiting, failing, retrying, paging. UI state is everything else: the filter text, the selected card, an open sheet.
+
+```diagram
+title "Two kinds of state, two owners"
+direction right
+group boundary "Boundary state" tone primary {
+  data "Data component" detail "loading, failed, ready"
+}
+group ui "UI state" tone accent {
+  hook "Hook" detail "filter, selection, open sheet"
+}
+```
+
+| | Boundary state | UI state |
+| --- | --- | --- |
+| Example | the card search is loading | the filter text |
+| Timing | asynchronous, can go stale | synchronous, local |
+| Owner | a data component | a hook, or the component itself |
+
+## A read data component owns one read
+
+`CardsData` runs the card search, draws the loading and failure states itself, and gives its children ready cards only.
+
+```diagram
+title "A read data component"
+direction down
+cards "CardsData" detail "owns the read" tone primary
+spinner "Loading view" detail "draws itself"
+failure "Failure view" detail "draws itself"
+grid "CardGrid" detail "ready cards only" tone success
+cards -> spinner "loading"
+cards -> failure "failed"
+cards -> grid "ready"
+```
+
+Its state is a union, so the component cannot forget a case. The paged version nests the second lifecycle inside `ready`, because "loading more" cannot exist before anything has loaded.
+
+```ts
+type ReadState<T> =
+  | { kind: 'loading' }
+  | { kind: 'failed'; failure: Failure }
+  | { kind: 'ready'; value: T };
+
+type PagedReadState<T> =
+  | { kind: 'loading' }
+  | { kind: 'failed'; failure: Failure }
+  | { kind: 'ready'; items: T[]; next: 'more' | 'loading' | 'failed' | 'end' };
+```
+
+The children never see these. A child that received a loading flag would have to decide what to draw while loading, and every screen would decide differently.
+
+```svelte
+<CardsData {cards} query={filter.query}>
+  {#snippet ready(items, loadMore)}
+    <CardGrid {items} onEnd={loadMore} />
+  {/snippet}
+</CardsData>
+```
+
+## A hook owns UI state for one concern
+
+A hook is a `createX()` function in a `.svelte.ts` file. It returns getters, so a caller always reads the current value. It never reads data and never calls a use case.
+
+```ts
+function createCardFilter() {
+  let text = $state('');
+  let pitch = $state<Pitch | 'any'>('any');
+
+  return {
+    get query(): CardQuery {
+      return { text, pitch };
+    },
+    setText(next: string) {
+      text = next;
+    },
+    setPitch(next: Pitch | 'any') {
+      pitch = next;
+    },
+  };
+}
+```
+
+The data component takes the hook's `query` as an input to its read, and never owns the filter. Otherwise the text field would have to reach up into whatever runs the search.
+
+A rule that combines data and state is a pure function: `visibleCards(cards, filter)` takes both and returns a list. Classes stay for what a hook cannot be: session memory, a write in progress, a browser resource that must be released, shared plumbing.
+
+## Pure components
+
+A pure component takes props and reports what happened through callbacks. It never sees loading, failure or the cache.
+
+```diagram
+title "Props in, callbacks out"
+direction right
+parent "Parent" detail "owns state" tone primary
+pure "CardGrid" detail "pure component" tone success
+parent -> pure "props"
+pure -> parent "callbacks"
+```
+
+It can be written and tested as if the data always exists, because for this component it always does.
+
+## A write owns its state too
+
+Saving a deck is a write. Its owner, a write view model or a write data component, holds the in-flight state and the outcome of the use case. What reaches the button is a described action, not two booleans.
+
+```ts
+type SaveDeckAction = {
+  label: string;
+  availability: 'busy' | 'ready';
+  message: string | null;
+  save(): void;
+};
+```
+
+A `busy` flag and an `enabled` flag allow four combinations, and one of them, busy and enabled at once, means nothing. One stored value cannot hold it. The button derives its spinner and its disabled state from `availability`.
+
+```steps
+sequence
+title "Saving a deck"
+participant button "Save button" tone primary
+participant owner "Write owner" tone accent
+participant usecase "Save deck use case"
+button -> owner "save()"
+owner -> usecase "Save the deck"
+usecase --> owner "A named result"
+owner --> button "New described action"
+step "The button only calls the callback it was given." : 1
+step "The owner marks the write busy. The button shows availability: busy." : 2
+step "The use case answers with a named result, such as saved or deck too large." : 3
+step "The owner turns the result into a label and a message. The button redraws." : 4
+```
+
+## Where each part stops
+
+| Part | Holds | Never |
+| --- | --- | --- |
+| Read data component | one read: loading, failed, ready | UI choices |
+| Write owner | one write and its outcome | a read |
+| Hook | UI state for one concern | a read, a use case call |
+| Pure component | nothing | lifecycle |
+
+A read data component draws in place of its children only when it cannot produce what they need. A write can always draw its controls, so it draws them and only describes their state.
