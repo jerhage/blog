@@ -8,13 +8,14 @@ group home "Home LAN" {
   laptop "Laptop" detail "100.64.0.2" tone primary
   router "Router" detail "NAT"
 }
-group office "Office" {
-  server "Server" tone accent
+group office "Office" tone accent {
+  server "Server" tone danger
 }
 relay "DERP relay"
 laptop -> router
 router -> relay "fallback"
 laptop <-> server "WireGuard"
+relay -- server
 `;
 
 function errorsOf(text: string) {
@@ -43,7 +44,8 @@ describe('parseDiagram', () => {
 						kind: 'group',
 						id: 'office',
 						label: 'Office',
-						boxes: [{ kind: 'box', id: 'server', label: 'Server', detail: undefined, tone: 'accent' }],
+						tone: 'accent',
+						boxes: [{ kind: 'box', id: 'server', label: 'Server', detail: undefined, tone: 'danger' }],
 					},
 					{ kind: 'box', id: 'relay', label: 'DERP relay', detail: undefined, tone: undefined },
 				],
@@ -51,6 +53,7 @@ describe('parseDiagram', () => {
 					{ from: 'laptop', to: 'router', arrows: 'forward' },
 					{ from: 'router', to: 'relay', arrows: 'forward', label: 'fallback' },
 					{ from: 'laptop', to: 'server', arrows: 'both', label: 'WireGuard' },
+					{ from: 'relay', to: 'server', arrows: 'none' },
 				],
 			},
 		});
@@ -85,8 +88,10 @@ describe('parseDiagram', () => {
 		]);
 	});
 
-	it('reports a tone Kandan cannot draw and a tone that does not exist', () => {
-		expect(errorsOf('title "t"\na "A" tone danger\nb "B" tone pink').map((e) => [e.kind, e.line])).toEqual([
+	it('reports a tone that does not exist on a node and on a group', () => {
+		expect(
+			errorsOf('title "t"\na "A" tone pink\ngroup g "G" tone pink {').map((e) => [e.kind, e.line]),
+		).toEqual([
 			['unknown-tone', 2],
 			['unknown-tone', 3],
 		]);
@@ -96,12 +101,6 @@ describe('parseDiagram', () => {
 		expect(errorsOf('title "t"\ngroup g "G" {\ngroup h "H" {\n}\n}')).toEqual([
 			{ kind: 'nested-group', line: 3, message: expect.any(String) },
 			{ kind: 'syntax', line: 5, message: expect.any(String) },
-		]);
-	});
-
-	it('reports an edge without an arrowhead', () => {
-		expect(errorsOf('title "t"\na "A"\nb "B"\na -- b')).toEqual([
-			{ kind: 'unsupported-edge', line: 4, message: expect.any(String) },
 		]);
 	});
 });

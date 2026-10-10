@@ -16,9 +16,9 @@ async function render(markdown: string): Promise<string> {
 }
 
 describe('diagramBlocks', () => {
-	it('replaces a diagram block with its titled SVG', async () => {
+	it('replaces a diagram block with its titled SVG in a scroll region', async () => {
 		const html = await render('before\n\n```diagram\ntitle "Two peers"\na "Alpha"\nb "Beta"\na -> b\n```\n\nafter');
-		expect(html).toMatch(/<div class="diagram-block"><svg[^>]*class="diagram"/u);
+		expect(html).toMatch(/<div class="diagram-block"><div class="diagram-scroll"[^>]*aria-label="Two peers"[^>]*><svg[^>]*class="diagram"/u);
 		expect(html).toMatch(/<title id="diagram-1-[^"]*">Two peers<\/title>/u);
 		expect(html).toContain('Alpha');
 		expect(html).not.toContain('<pre');

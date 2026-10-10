@@ -57,14 +57,41 @@ describe('layoutDiagram', () => {
 		expect(boxNamed(nodes, 'Laptop').y).toBeGreaterThan(home.y + 16);
 	});
 
-	it('joins the boxes an edge names, and draws a two-way edge as two opposite edges', async () => {
+	it('joins the boxes an edge names, and draws a two-way edge as one edge with a head at each end', async () => {
 		const { nodes, edges } = await layoutDiagram(sourceOf(EXAMPLE));
+		expect(edges).toHaveLength(3);
+		expect(edges[0]).toMatchObject({ from: boxNamed(nodes, 'Laptop'), to: boxNamed(nodes, 'Router'), heads: 'end' });
+		expect(edges[2]).toMatchObject({
+			from: boxNamed(nodes, 'Laptop'),
+			to: boxNamed(nodes, 'Server'),
+			label: 'WireGuard',
+			heads: 'both',
+		});
+	});
+
+	it('routes each edge from one box to the other along right angles and backs its label', async () => {
+		const { nodes, edges } = await layoutDiagram(sourceOf(`${EXAMPLE}\nrelay -- server`));
+		const [first] = edges;
+		const points = first.points ?? [];
 		const laptop = boxNamed(nodes, 'Laptop');
-		const server = boxNamed(nodes, 'Server');
-		expect(edges).toHaveLength(4);
-		expect(edges[0]).toMatchObject({ from: laptop, to: boxNamed(nodes, 'Router') });
-		expect(edges[2]).toMatchObject({ from: laptop, to: server, label: 'WireGuard' });
-		expect(edges[3]).toMatchObject({ from: server, to: laptop });
+		expect(points[0].x).toBe(laptop.x + laptop.width);
+		expect(points.at(-1)?.x).toBe(boxNamed(nodes, 'Router').x);
+		for (const edge of edges) {
+			const route = edge.points ?? [];
+			expect(route.length).toBeGreaterThanOrEqual(2);
+			route.slice(1).forEach((point, index) => {
+				const before = route[index];
+				expect(point.x === before.x || point.y === before.y).toBe(true);
+			});
+		}
+		expect(edges[1]).toMatchObject({ labelBacked: true, labelAt: expect.objectContaining({ x: expect.any(Number) }) });
+		expect(edges[3]).toMatchObject({ heads: 'none', from: boxNamed(nodes, 'DERP relay') });
+		expect(first.labelBacked).toBeUndefined();
+	});
+
+	it('gives a group its tone', async () => {
+		const { nodes } = await layoutDiagram(sourceOf('title "t"\ngroup g "G" tone success {\na "A"\n}'));
+		expect(groupNamed(nodes, 'G').tone).toBe('success');
 	});
 
 	it('lays layers along the x axis going right and the y axis going down', async () => {

@@ -1,5 +1,8 @@
 import { match } from 'ts-pattern';
 import type { DiagramTone } from '../../kandan/components/diagram';
+import { toneNamed, unknownToneMessage } from './tones';
+import { tokenize } from './tokens';
+import type { ArrowText, Token } from './tokens';
 
 type DiagramDirection = 'right' | 'down';
 
@@ -15,12 +18,13 @@ type SourceGroup = {
 	readonly kind: 'group';
 	readonly id: string;
 	readonly label: string;
+	readonly tone?: DiagramTone;
 	readonly boxes: readonly SourceBox[];
 };
 
 type SourceMember = SourceBox | SourceGroup;
 
-type EdgeArrows = 'forward' | 'both';
+type EdgeArrows = 'forward' | 'both' | 'none';
 
 type SourceEdge = {
 	readonly from: string;
@@ -42,8 +46,7 @@ type DiagramErrorKind =
 	| 'duplicate-id'
 	| 'unknown-id'
 	| 'unknown-tone'
-	| 'nested-group'
-	| 'unsupported-edge';
+	| 'nested-group';
 
 type DiagramError = {
 	readonly kind: DiagramErrorKind;
@@ -55,86 +58,29 @@ type ParseDiagramResult =
 	| { readonly kind: 'success'; readonly source: DiagramSource }
 	| { readonly kind: 'failure'; readonly errors: readonly DiagramError[] };
 
-type Token =
-	| { readonly kind: 'word'; readonly text: string }
-	| { readonly kind: 'string'; readonly text: string }
-	| { readonly kind: 'open' }
-	| { readonly kind: 'close' }
-	| { readonly kind: 'arrow'; readonly arrow: '->' | '<->' | '--' };
-
-type Tokens =
-	| { readonly kind: 'tokens'; readonly tokens: readonly Token[] }
-	| { readonly kind: 'invalid'; readonly message: string };
-
 type Statement =
 	| { readonly kind: 'blank' }
 	| { readonly kind: 'title'; readonly text: string }
 	| { readonly kind: 'direction'; readonly direction: DiagramDirection }
-	| { readonly kind: 'group-open'; readonly id: string; readonly label: string }
+	| {
+			readonly kind: 'group-open';
+			readonly id: string;
+			readonly label: string;
+			readonly tone?: DiagramTone;
+	  }
 	| { readonly kind: 'group-close' }
 	| { readonly kind: 'box'; readonly box: SourceBox }
 	| { readonly kind: 'edge'; readonly edge: SourceEdge }
 	| { readonly kind: 'invalid'; readonly error: Omit<DiagramError, 'line'> };
 
-const SUPPORTED_TONES: readonly DiagramTone[] = ['neutral', 'primary', 'accent'];
-
-const KNOWN_TONES = ['neutral', 'primary', 'accent', 'success', 'warning', 'danger'];
-
-const WORD_START = /[A-Za-z_]/u;
-
-const WORD_PART = /[A-Za-z0-9_]/u;
-
-const ARROWS = ['<->', '->', '--'] as const;
-
-function tokenize(line: string): Tokens {
-	const tokens: Token[] = [];
-	let index = 0;
-	while (index < line.length) {
-		const character = line[index];
-		if (character === ' ' || character === '\t') {
-			index += 1;
-			continue;
-		}
-		if (character === '"') {
-			let text = '';
-			index += 1;
-			while (index < line.length && line[index] !== '"') {
-				if (line[index] === '\\' && index + 1 < line.length) index += 1;
-				text += line[index];
-				index += 1;
-			}
-			if (index >= line.length) return { kind: 'invalid', message: 'A quoted text is never closed.' };
-			index += 1;
-			tokens.push({ kind: 'string', text });
-			continue;
-		}
-		if (character === '{') {
-			tokens.push({ kind: 'open' });
-			index += 1;
-			continue;
-		}
-		if (character === '}') {
-			tokens.push({ kind: 'close' });
-			index += 1;
-			continue;
-		}
-		const arrow = ARROWS.find((candidate) => line.startsWith(candidate, index));
-		if (arrow !== undefined) {
-			tokens.push({ kind: 'arrow', arrow });
-			index += arrow.length;
-			continue;
-		}
-		if (WORD_START.test(character)) {
-			let end = index + 1;
-			while (end < line.length && WORD_PART.test(line[end])) end += 1;
-			tokens.push({ kind: 'word', text: line.slice(index, end) });
-			index = end;
-			continue;
-		}
-		return { kind: 'invalid', message: `Unexpected character "${character}".` };
-	}
-	return { kind: 'tokens', tokens };
-}
+const DIAGRAM_TONES: readonly DiagramTone[] = [
+	'neutral',
+	'primary',
+	'accent',
+	'success',
+	'warning',
+	'danger',
+];
 
 function invalid(kind: DiagramErrorKind, message: string): Statement {
 	return { kind: 'invalid', error: { kind, message } };
@@ -142,18 +88,6 @@ function invalid(kind: DiagramErrorKind, message: string): Statement {
 
 function syntax(message: string): Statement {
 	return invalid('syntax', message);
-}
-
-function toneOf(name: string): { readonly tone: DiagramTone } | Statement {
-	const tone = SUPPORTED_TONES.find((candidate) => candidate === name);
-	if (tone !== undefined) return { tone };
-	if (KNOWN_TONES.includes(name)) {
-		return invalid(
-			'unknown-tone',
-			`The tone "${name}" cannot be drawn. Use ${SUPPORTED_TONES.join(', ')}.`,
-		);
-	}
-	return invalid('unknown-tone', `Unknown tone "${name}". Use ${SUPPORTED_TONES.join(', ')}.`);
 }
 
 function boxStatement(id: string, label: string, rest: readonly Token[]): Statement {
@@ -166,9 +100,9 @@ function boxStatement(id: string, label: string, rest: readonly Token[]): Statem
 		if (key.kind === 'word' && key.text === 'detail' && value?.kind === 'string' && detail === undefined) {
 			detail = value.text;
 		} else if (key.kind === 'word' && key.text === 'tone' && value?.kind === 'word' && tone === undefined) {
-			const resolved = toneOf(value.text);
-			if ('kind' in resolved) return resolved;
-			tone = resolved.tone;
+			const named = toneNamed(value.text, DIAGRAM_TONES);
+			if (named === null) return invalid('unknown-tone', unknownToneMessage(value.text, DIAGRAM_TONES));
+			tone = named;
 		} else {
 			return syntax('After the label, a node takes detail "text" and tone name, once each.');
 		}
@@ -177,20 +111,35 @@ function boxStatement(id: string, label: string, rest: readonly Token[]): Statem
 	return { kind: 'box', box: { kind: 'box', id, label, detail, tone } };
 }
 
-function edgeStatement(from: string, arrow: '->' | '<->' | '--', to: string, rest: readonly Token[]): Statement {
-	if (arrow === '--') {
-		return invalid(
-			'unsupported-edge',
-			'An edge without an arrowhead cannot be drawn. Use -> or <->.',
-		);
-	}
-	const arrows: EdgeArrows = arrow === '->' ? 'forward' : 'both';
+const EDGE_ARROWS: Readonly<Partial<Record<ArrowText, EdgeArrows>>> = {
+	'->': 'forward',
+	'<->': 'both',
+	'--': 'none',
+};
+
+function edgeStatement(from: string, arrow: ArrowText, to: string, rest: readonly Token[]): Statement {
+	const arrows = EDGE_ARROWS[arrow];
+	if (arrows === undefined) return syntax('Join two nodes with ->, <-> or --.');
 	if (rest.length === 0) return { kind: 'edge', edge: { from, to, arrows } };
 	const [label] = rest;
 	if (rest.length === 1 && label.kind === 'string') {
 		return { kind: 'edge', edge: { from, to, arrows, label: label.text } };
 	}
 	return syntax('An edge takes an optional "label" after the second id.');
+}
+
+function groupStatement(id: string, label: string, rest: readonly Token[]): Statement {
+	const open = rest.at(-1);
+	const options = rest.slice(0, -1);
+	if (open?.kind !== 'open') return syntax('Write group id "label" {.');
+	if (options.length === 0) return { kind: 'group-open', id, label };
+	const [key, value] = options;
+	if (options.length !== 2 || key.kind !== 'word' || key.text !== 'tone' || value.kind !== 'word') {
+		return syntax('Write group id "label" {, or group id "label" tone name {.');
+	}
+	const tone = toneNamed(value.text, DIAGRAM_TONES);
+	if (tone === null) return invalid('unknown-tone', unknownToneMessage(value.text, DIAGRAM_TONES));
+	return { kind: 'group-open', id, label, tone };
 }
 
 function statementOf(line: string): Statement {
@@ -216,11 +165,8 @@ function statementOf(line: string): Statement {
 			: syntax('Write direction right or direction down.');
 	}
 	if (first.text === 'group') {
-		return second?.kind === 'word' &&
-			third?.kind === 'string' &&
-			rest.length === 1 &&
-			rest[0].kind === 'open'
-			? { kind: 'group-open', id: second.text, label: third.text }
+		return second?.kind === 'word' && third?.kind === 'string'
+			? groupStatement(second.text, third.text, rest)
 			: syntax('Write group id "label" {.');
 	}
 	if (second?.kind === 'string') return boxStatement(first.text, second.text, afterSecond);
@@ -235,7 +181,9 @@ function parseDiagram(text: string): ParseDiagramResult {
 	const declared = new Map<string, 'box' | 'group'>();
 	let title: string | undefined;
 	let direction: DiagramDirection = 'right';
-	let openGroup: { id: string; label: string; line: number; boxes: SourceBox[] } | undefined;
+	let openGroup:
+		| { id: string; label: string; tone: DiagramTone | undefined; line: number; boxes: SourceBox[] }
+		| undefined;
 
 	const fail = (kind: DiagramErrorKind, line: number, message: string) => {
 		errors.push({ kind, line, message });
@@ -268,14 +216,20 @@ function parseDiagram(text: string): ParseDiagramResult {
 					return;
 				}
 				declare(statement.id, 'group', line);
-				openGroup = { id: statement.id, label: statement.label, line, boxes: [] };
+				openGroup = { id: statement.id, label: statement.label, tone: statement.tone, line, boxes: [] };
 			})
 			.with({ kind: 'group-close' }, () => {
 				if (openGroup === undefined) {
 					fail('syntax', line, 'A closing brace has no group to close.');
 					return;
 				}
-				members.push({ kind: 'group', id: openGroup.id, label: openGroup.label, boxes: openGroup.boxes });
+				members.push({
+					kind: 'group',
+					id: openGroup.id,
+					label: openGroup.label,
+					tone: openGroup.tone,
+					boxes: openGroup.boxes,
+				});
 				openGroup = undefined;
 			})
 			.with({ kind: 'box' }, ({ box }) => {

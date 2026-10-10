@@ -13,6 +13,7 @@ type DiagramProps = {
 	height: number;
 	nodes: readonly DiagramNode[];
 	edges: readonly DiagramEdge[];
+	scrollLabel: string;
 };
 
 type Loaded = {
@@ -53,7 +54,7 @@ function diagramComponent(): Promise<Loaded> {
 
 async function renderDiagram(layout: DiagramLayout, idPrefix: string): Promise<string> {
 	const { diagram } = await diagramComponent();
-	const { body } = render(diagram, { props: layout, idPrefix });
+	const { body } = render(diagram, { props: { ...layout, scrollLabel: layout.label }, idPrefix });
 	return body.replace(HYDRATION_COMMENT, '').replace(/\s*\n\s*/gu, ' ').trim();
 }
 
