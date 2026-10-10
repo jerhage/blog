@@ -1,0 +1,196 @@
+---
+title: "How I structure a frontend"
+description: Ports and adapters, domains in a graph, composition at the page, and three kinds of UI parts, shown on a card deck builder.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - svelte
+---
+
+The running example is a deck builder for Flesh and Blood: search cards, see which ones you own, build a deck. The diagrams hold for any stack. The code examples use TypeScript and Svelte 5; in React the same parts are a render-prop data component, a custom hook and a plain component.
+
+## 1. Ports and adapters
+
+A domain declares what it needs as a port, named for the need. An adapter is the "how" behind it, named for the mechanism.
+
+```diagram
+title "The cards domain and its outside world"
+direction down
+group cards "cards domain" tone primary {
+  search "Search cards" detail "use case"
+  port "CardCatalog" detail "port" tone primary
+}
+group outside "outside" {
+  adapter "Card API adapter" detail "adapter" tone accent
+  api "Card API" detail "HTTP"
+}
+search -> port "needs"
+adapter -> port "implements"
+adapter -> api "fetches"
+```
+
+```ts
+type CardCatalog = {
+  search(query: CardQuery, page: PageCursor, options: ReadOptions): Promise<SearchCardsResult>;
+};
+```
+
+The use case only knows `CardCatalog`. Swapping the HTTP API for a local file is a new adapter, with no change above it.
+
+## 2. Domains form a graph
+
+Each domain is a folder with the same parts: `domain/` (ports and types), `use-cases/`, `adapters/`, `queries/` and `ui/`. Domains import each other in one direction only.
+
+```diagram
+title "Domains import in one direction"
+direction down
+decks "decks" detail "non-leaf: deck builder" tone accent
+cards "cards" detail "leaf: search, detail" tone primary
+collection "collection" detail "leaf: owned cards" tone primary
+kernel "kernel" detail "shared types and tools"
+decks -> cards "imports"
+decks -> collection "imports"
+cards -> kernel
+collection -> kernel
+decks -> kernel
+```
+
+- A leaf imports no other domain.
+- A non-leaf imports only leaves.
+- Nothing imports a non-leaf.
+
+A dependency checker fails the build when an import breaks a rule, so a cycle can never appear.
+
+## 3. Composition at the page
+
+One file, the composition root, builds every adapter and hands out use cases. Nothing else creates an adapter.
+
+```ts
+const catalog = new HttpCardCatalog(fetch);
+const deckStore = new IndexedDbDeckRepository(database);
+
+const container = {
+  cards: { searchCards: (query, page, options) => searchCards({ catalog }, query, page, options) },
+  decks: { saveDeck: (deck) => saveDeck({ deckStore }, deck) },
+};
+```
+
+A page is thin. It takes the container and puts domains side by side. When one domain's screen needs a piece of another, the page passes it in as a slot, so neither domain imports the other's UI.
+
+```svelte
+<DeckBuilder decks={container.decks}>
+  {#snippet picker(addCard)}
+    <CardSearch cards={container.cards} onpick={addCard} />
+  {/snippet}
+</DeckBuilder>
+```
+
+```diagram
+title "The deck builder page composes two domains"
+direction down
+page "Deck builder page" detail "composes" tone warning
+builder "Deck builder" detail "decks UI" tone accent
+picker "Card search" detail "cards UI, in a slot" tone primary
+root "Composition root" detail "adapters to use cases"
+root -> page "container"
+page -> builder
+page -> picker
+picker -> builder "card picked"
+```
+
+## 4. Three kinds of UI parts
+
+Inside a domain's UI, every part has one job.
+
+```diagram
+title "Data component, hook and pure component"
+direction down
+hook "Filter hook" detail "UI state" tone accent
+data "Cards data component" detail "boundary state" tone primary
+grid "Card grid" detail "pure component" tone success
+hook -> data "query"
+data -> grid "ready cards only"
+grid -> hook "filter changed"
+```
+
+| Part | Holds | Never |
+| --- | --- | --- |
+| Data component | One read or one write: loading, failed, ready | Holds UI choices |
+| Hook | UI state for one concern: filter text, selection, open sheet | Calls a use case or reads a query |
+| Pure component | Nothing: props in, callbacks out | Sees loading or errors |
+
+The data component owns the read and draws its loading and failure states. Its children only ever get ready data.
+
+```svelte
+<script lang="ts">
+  let { cards, query, children }: Props = $props();
+  const read = readPagedQuery(() => searchCardsQuery(cards, query));
+</script>
+
+{#if read.state.kind === 'loading'}
+  <Spinner />
+{:else if read.state.kind === 'failed'}
+  <Alert>{failureText(read.state.failure)}</Alert>
+{:else}
+  {@render children(read.state.items, read.loadMore)}
+{/if}
+```
+
+`read.state` is a `PagedReadState`: `loading`, `failed`, or `ready` with the items and what happens next (`more`, `loading`, `failed` or `end`).
+
+The hook holds the filter and nothing else:
+
+```ts
+function createCardFilter() {
+  let text = $state('');
+  let pitch = $state<Pitch | 'any'>('any');
+
+  return {
+    get query(): CardQuery {
+      return { text, pitch };
+    },
+    setText(next: string) {
+      text = next;
+    },
+    setPitch(next: Pitch | 'any') {
+      pitch = next;
+    },
+  };
+}
+```
+
+## One search, end to end
+
+```steps
+sequence
+title "Typing a card name"
+participant grid "Card grid" tone primary
+participant hook "Filter hook"
+participant data "Cards data component" tone accent
+participant usecase "Search use case"
+participant adapter "Card API adapter"
+grid -> hook "Reader types a card name"
+hook -> data "New query"
+data -> usecase "Read through the query cache"
+usecase -> adapter "Search through the port"
+adapter --> usecase "Cards or a named failure"
+usecase --> data "A named result"
+data --> grid "Ready cards only"
+step "The pure grid reports what the reader typed. It holds no state of its own." : 1
+step "The hook updates its filter. Its query getter now returns the new query." : 2
+step "The data component's read sees a new query and asks the cache, which calls the use case." : 3
+step "The use case calls its port. The adapter does the HTTP request." : 4
+step "The answer travels back as named outcomes, not thrown errors." : 5 6
+step "The grid only ever receives ready cards." : 7
+```
+
+## More on each part
+
+Each idea gets its own post:
+
+- Data components, hooks and pure components
+- Ports, adapters and the composition root
+- The domain graph in practice
+- Use cases and their named results
+- Queries and caching
