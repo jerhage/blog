@@ -12,14 +12,16 @@ Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/).
 
 ## One use case per operation
 
-A use case is one thing the app does: search cards, save a deck. Each gets its own file, even when it only wraps one port call. It is stateless: the ports it needs come in as an argument.
+A use case is one thing the app does: search cards, save a deck. One way to think about it is a service layer. It holds the business rules of one operation, and it talks to the data access layer through ports.
+
+Each use case gets its own file, even when it only wraps one port call. It is stateless: the ports it needs come in as an argument.
 
 ```diagram
 title "A use case between the screen and the ports"
 direction down
 screen "Data component or write owner" tone success
-usecase "saveDeck" detail "one operation, stateless" tone primary
-decks "DeckRepository" detail "port"
+usecase "saveDeck" detail "business rules: the deck limit" tone primary
+decks "DeckRepository" detail "port to the data access layer"
 clock "Clock" detail "port"
 screen -> usecase "calls"
 usecase -> decks
@@ -63,7 +65,7 @@ One question sorts them: can the caller do something meaningful with it? If yes,
 
 ## Passing outcomes on
 
-A use case that calls another narrows instead of matching.
+`saveDeck` shows both jobs. It applies a business rule, the deck limit, and then stores the deck through its port. When the port answers with a failure, the use case narrows instead of matching.
 
 ```ts
 async function saveDeck(
