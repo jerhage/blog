@@ -1,0 +1,202 @@
+---
+title: "Hub-and-spoke VPNs and mesh overlays: how Tailscale connects devices"
+description: How packets travel through a VPN tunnel, how a hub finds the way back to the right client, and what changes when every device talks to its peers directly.
+published: 2026-10-09
+tags:
+  - vpn
+  - wireguard
+  - tailscale
+  - nat-traversal
+  - networking
+---
+
+A VPN joins devices that sit on different networks into one private network. There are two common ways to lay it out. In a hub-and-spoke VPN, every device connects to one central machine. In a mesh overlay, every device connects to the devices it needs. This post compares the two, using plain WireGuard for the hub-and-spoke case and Tailscale for the mesh, and follows a single request packet through each.
+
+## The hub-and-spoke model
+
+In a hub-and-spoke VPN, a concentrator (also called a gateway) accepts a tunnel from every client and every branch site. Clients hold one route: everything for the private network goes into the tunnel to the hub.
+
+```diagram
+title "A hub-and-spoke VPN"
+direction right
+group clients "Clients" {
+  laptop_a "Laptop A" detail "10.8.0.2"
+  laptop_b "Laptop B" detail "10.8.0.3"
+}
+hub "Hub" detail "VPN gateway" tone warning
+group site "Branch office" {
+  server "Server" detail "10.0.5.20"
+}
+laptop_a <-> hub "tunnel"
+laptop_b <-> hub "tunnel"
+hub <-> server
+```
+
+This layout is easy to reason about, and it has four known costs.
+
+- Traffic between two clients hairpins: Laptop A sends to the hub, and the hub sends to Laptop B, even when both sit in the same building.
+- The hub carries every byte, so its bandwidth and CPU are the limit for everyone.
+- The hub is a single point of failure. If it is down, nobody reaches anything.
+- Adding a site or a client means changing the hub's configuration.
+
+## How a packet travels through a tunnel
+
+Suppose Laptop A opens a connection to the server at `10.0.5.20`. The application builds an ordinary IP packet. Its source is the laptop's tunnel address, `10.8.0.2`, and its destination is `10.0.5.20`. Call this the inner packet.
+
+The VPN software on the laptop does not send the inner packet as it is. It encrypts the whole inner packet, header included, and puts the result inside a new packet: the outer packet. For WireGuard the outer packet is a UDP datagram. Its destination is the hub's public address and port. Its source is the laptop's own address, which the home router rewrites to the router's public address on the way out.
+
+```packet
+title "A WireGuard transport message inside its outer packet"
+bits 32
+offsets 0 8 16 24
+row "Outer IP header" 32 detail "20 bytes: source is the client's public endpoint, destination is the hub" tone accent
+row "UDP source port" 16 tone accent | "UDP destination port" 16 tone accent
+row "UDP length" 16 tone accent | "UDP checksum" 16 tone accent
+row "Type: 4" 8 tone primary | "Reserved" 24 tone primary
+row "Receiver index" 32 detail "Chosen by the receiver during the handshake" tone primary
+row "Counter, first 4 bytes" 32 tone primary
+row "Counter, last 4 bytes" 32 tone primary
+row "Encrypted inner IP packet" 32 detail "Variable length, padded to a multiple of 16 bytes" tone success
+row "Authentication tag" 32 detail "16 bytes" tone success
+```
+
+The rows are not to scale: the outer header, the encrypted packet and the tag each take several 32-bit words and are drawn as one row.
+
+### What the hub does with it
+
+The hub receives the datagram on its UDP port. The receiver index in the WireGuard header tells it which session the message belongs to, and the session leads to a peer and its keys. The hub decrypts the payload and has the inner packet again.
+
+From here the hub routes on the inner destination, not the outer one. If the destination is on the hub's internal network, the hub forwards the packet there. If it belongs to another client, the hub encrypts it again for that client and sends it to that client's current endpoint. If it is on the internet, the hub forwards it, usually after rewriting the source with NAT.
+
+### Finding the way back
+
+The hub keeps state per peer, and the replies depend on it.
+
+1. **Which inner addresses belong to which peer.** WireGuard calls this cryptokey routing. Each peer has a list of allowed IP addresses. For an outgoing packet, the hub picks the peer whose list contains the destination. For an incoming packet, it accepts the packet only if the inner source is in the list of the peer that sent it.
+2. **Where the peer is right now.** The hub stores the outer address and port of the last authenticated packet from the peer. If the client moves to another network, its next valid packet updates the endpoint, and replies follow it.
+3. **The NAT table, if the hub translates traffic to the internet.** The hub's connection-tracking table maps a reply to the inner client address. The routing rule in step 1 then picks the tunnel.
+
+The client's home router keeps a similar mapping, from the laptop's local port to a public port, and it only keeps it while traffic flows. A UDP mapping can expire after a short idle time. WireGuard sends nothing when it is idle, so a client behind NAT that wants to stay reachable sets `PersistentKeepalive`, which sends a small authenticated packet every few seconds.
+
+## Following one request through the hub
+
+The walk-through below follows one request and its reply. Step through it with the buttons.
+
+```steps
+sequence
+title "One request and its reply through a hub"
+participant laptop "Laptop" tone primary
+participant router "Home router"
+participant hub "Hub" tone accent
+participant server "Server"
+laptop -> router "Outer packet to the hub"
+router -> hub "Outer source rewritten"
+hub -> hub "Decrypt, route on inner destination"
+hub -> server "Inner packet, unencrypted"
+server --> hub "Reply to the inner source"
+hub -> hub "Cryptokey routing picks the peer"
+hub --> router "Encrypted to the last endpoint"
+router --> laptop "Destination translated back"
+step "The laptop encrypts the inner packet (10.8.0.2 to 10.0.5.20) and wraps it in a UDP datagram addressed to the hub." : 1
+step "The home router rewrites the outer source to its own public address and port, and remembers the mapping." : 2
+step "The hub finds the peer from the receiver index, decrypts, and reads the inner destination, 10.0.5.20." : 3
+step "The destination is on the internal network, so the hub forwards the inner packet there. For another client it would encrypt again for that peer." : 4
+step "The server answers. The reply is addressed to 10.8.0.2, the inner source of the request." : 5
+step "The hub looks up 10.8.0.2 in its table of allowed addresses. It belongs to the laptop's peer entry." : 6
+step "The hub encrypts the reply for that peer and sends it to the laptop's last known endpoint, which is the home router's public address and port." : 7
+step "The router finds the mapping it made in step 2, translates the destination back to the laptop, and the laptop decrypts the reply." : 8
+```
+
+## The mesh model
+
+A mesh overlay splits the job in two. The control plane decides who may talk to whom. The data plane carries the packets. In Tailscale, a coordination server is the control plane: it distributes each device's public key, its known endpoints and the access policy, and it carries no user traffic. Each device runs WireGuard and builds tunnels directly to the peers it needs, so the data plane is a mesh.
+
+```diagram
+title "A mesh overlay with a coordination server and a relay"
+direction down
+coord "Coordination server" detail "keys, endpoints, policy" tone accent
+group home "Home network" {
+  laptop "Laptop" detail "100.101.0.2" tone primary
+}
+group office "Office network" {
+  server "Server" detail "100.101.0.9" tone primary
+}
+relay "DERP relay" detail "fallback only" tone warning
+coord -- laptop "control"
+coord -- server "control"
+laptop <-> server "direct WireGuard"
+laptop <-> relay "encrypted"
+relay <-> server "encrypted"
+```
+
+Every device gets a stable address from `100.64.0.0/10`, the range reserved for carrier-grade NAT, so it does not collide with ordinary home or office networks. Tailscale also gives each device a name through MagicDNS, so you reach `office-nas` rather than an address.
+
+### Joining and connecting
+
+A new device registers with the coordination server and receives the list of peers it may reach, with their public keys and endpoints. It then starts a WireGuard handshake with a peer.
+
+```sequence
+title "A device joins and reaches a peer"
+participant device "New device" tone primary
+participant control "Coordination server" tone accent
+participant peer "Peer"
+participant relay "DERP relay"
+device -> control "Register: public key, endpoints"
+control --> device "Peers: keys, endpoints, policy"
+device -> peer "Handshake initiation"
+peer --> device "Handshake response"
+note device..peer "Direct path, both sides now share keys"
+device -> relay "Encrypted packets, if no direct path works"
+relay -> peer "Forwarded unchanged"
+```
+
+Each device learns its own public endpoint with STUN-style queries: it asks a server on the internet which address and port the request came from. The coordination server passes these endpoints to the peers. Then both peers send to each other's endpoint at about the same time. Each NAT sees outgoing traffic first, so it lets the peer's packets in. Tailscale keeps the relay path running while it tries this, then moves to the direct path when one works.
+
+Some NATs choose a different public port for every destination. A direct path through such a NAT often fails, and the relay stays in use. DERP relays forward the WireGuard packets without being able to read them, since the keys belong to the two devices.
+
+The handshake itself is one 148-byte message from the initiator.
+
+```packet
+title "A WireGuard handshake initiation message"
+bits 32
+offsets 0 8 16 24
+row "Type: 1" 8 tone primary | "Reserved" 24 tone primary
+row "Sender index" 32 detail "4 bytes" tone primary
+row "Unencrypted ephemeral" 32 detail "32 bytes" tone accent
+row "Encrypted static" 32 detail "48 bytes: the sender's public key and a tag" tone success
+row "Encrypted timestamp" 32 detail "28 bytes: a TAI64N timestamp and a tag" tone success
+row "mac1" 32 detail "16 bytes" tone warning
+row "mac2" 32 detail "16 bytes" tone warning
+```
+
+### Looking at it from a device
+
+Each device does the hub's job for its own peers: its peer table maps each peer's `100.x` address to that peer's key and current endpoint, and the coordination server keeps those tables up to date. A direct path removes the hairpin, because the packet no longer goes through a third machine. The following output is an illustration, not captured from a real network.
+
+```text
+$ tailscale status
+100.101.0.2   laptop      alice@  linux  -
+100.101.0.9   office-nas  alice@  linux  active; direct 203.0.113.7:41641
+100.101.0.11  phone       alice@  iOS    active; relay "fra"
+
+$ tailscale ping office-nas
+pong from office-nas (100.101.0.9) via DERP(fra) in 38ms
+pong from office-nas (100.101.0.9) via 203.0.113.7:41641 in 12ms
+```
+
+<Callout tone="info" title="Control plane and data plane">
+  The coordination server is needed to add a device, change policy or rotate a key. Packets between devices that already have a path do not go through it.
+</Callout>
+
+## Trade-offs
+
+| | Hub-and-spoke | Mesh overlay |
+| --- | --- | --- |
+| Path between two clients | Always through the hub | Direct when NAT allows, relay otherwise |
+| Latency | Adds the detour to the hub | Close to the direct internet path |
+| Bandwidth limit | The hub's | Each device's own link |
+| Failure of the central part | Nothing works | New devices and changes wait; existing paths keep working |
+| Traffic inspection and one exit point | Simple, one place | Needs policy on each device or a designated exit device |
+| Adding a device | Edit the hub | Register the device with the coordination server |
+
+Neither layout is better for every case. A hub is the simpler fit when all traffic must pass one inspection point or leave through one address. A mesh fits when devices mostly talk to each other and the hub would only add distance.
