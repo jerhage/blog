@@ -5,10 +5,10 @@ published: 2026-10-09
 tags:
   - architecture
   - frontend
-  - svelte
+  - react
 ---
 
-The running example is a deck builder for Flesh and Blood: search cards, see which ones you own, build a deck. The diagrams hold for any stack. The code examples use TypeScript and Svelte 5; in React the same parts are a render-prop data component, a custom hook and a plain component.
+The running example is a deck builder for Flesh and Blood: search cards, see which ones you own, build a deck. The diagrams hold for any stack. The code examples use TypeScript and React with TanStack Query and ts-pattern.
 
 ## 1. Ports and adapters
 
@@ -76,14 +76,26 @@ const container = {
 };
 ```
 
-A page is thin. It takes the container and puts domains side by side. When one domain's screen needs a piece of another, the page passes it in as a slot, so neither domain imports the other's UI.
+The container reaches the screens through React context.
 
-```svelte
-<DeckBuilder decks={container.decks}>
-  {#snippet picker(addCard)}
-    <CardSearch cards={container.cards} onpick={addCard} />
-  {/snippet}
-</DeckBuilder>
+```tsx
+const ContainerContext = createContext(container);
+
+const useContainer = () => useContext(ContainerContext);
+```
+
+A page is thin. It takes the container and puts domains side by side. When one domain's screen needs a piece of another, the page passes it in through a render prop, so neither domain imports the other's UI.
+
+```tsx
+function DeckBuilderPage() {
+  const { cards, decks } = useContainer();
+
+  return (
+    <DeckBuilder decks={decks}>
+      {(addCard) => <CardSearch cards={cards} onPick={addCard} />}
+    </DeckBuilder>
+  );
+}
 ```
 
 ```diagram
@@ -122,41 +134,30 @@ grid -> hook "filter changed"
 
 The data component owns the read and draws its loading and failure states. Its children only ever get ready data.
 
-```svelte
-<script lang="ts">
-  let { cards, query, children }: Props = $props();
-  const read = readPagedQuery(() => searchCardsQuery(cards, query));
-</script>
+```tsx
+function CardsData({ cards, query, children }: CardsDataProps) {
+  const { state, loadMore, reload } = usePagedReadState(searchCardsQuery(cards, query), CARD_PAGING);
 
-{#if read.state.kind === 'loading'}
-  <Spinner />
-{:else if read.state.kind === 'failed'}
-  <Alert>{failureText(read.state.failure)}</Alert>
-{:else}
-  {@render children(read.state.items, read.loadMore)}
-{/if}
+  return match(state)
+    .with({ type: 'loading' }, () => <Spinner />)
+    .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
+    .with({ type: 'success' }, ({ items }) => children({ cards: items, loadMore }))
+    .exhaustive();
+}
 ```
 
-`read.state` is a `PagedReadState`: `loading`, `failed`, or `ready` with the items and what happens next (`more`, `loading`, `failed` or `end`).
+`state` is a `PagedReadState`: `loading`, `failed`, or `success` with the items and a `paging` state (`idle`, `loadingMore` or `failed`).
 
 The hook holds the filter and nothing else:
 
 ```ts
-function createCardFilter() {
-  let text = $state('');
-  let pitch = $state<Pitch | 'any'>('any');
+function useCardFilter() {
+  const [text, setText] = useState('');
+  const [pitch, setPitch] = useState<Pitch | 'any'>('any');
 
-  return {
-    get query(): CardQuery {
-      return { text, pitch };
-    },
-    setText(next: string) {
-      text = next;
-    },
-    setPitch(next: Pitch | 'any') {
-      pitch = next;
-    },
-  };
+  const query: CardQuery = { text, pitch };
+
+  return { query, setText, setPitch };
 }
 ```
 
@@ -178,7 +179,7 @@ adapter --> usecase "Cards or a named failure"
 usecase --> data "A named result"
 data --> grid "Ready cards only"
 step "The pure grid reports what the reader typed. It holds no state of its own." : 1
-step "The hook updates its filter. Its query getter now returns the new query." : 2
+step "The hook updates its filter, so `query` holds the new value." : 2
 step "The data component's read sees a new query and asks the cache, which calls the use case." : 3
 step "The use case calls its port. The adapter does the HTTP request." : 4
 step "The answer travels back as named outcomes, not thrown errors." : 5 6

@@ -8,7 +8,7 @@ tags:
   - typescript
 ---
 
-Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and TanStack Query; any query cache has the same parts.
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript, React and TanStack Query with ts-pattern.
 
 ## A query factory per read
 
@@ -131,4 +131,4 @@ function searchCardsPagedQuery(cards: CardReads, query: CardQuery) {
 }
 ```
 
-A paged data component reads it through a paged adapter that turns the cache's result into `PagedReadState`: loading, failed, or ready with items and what happens next.
+A paged data component reads it through `usePagedReadState`, which turns the cache's result into `PagedReadState`: loading, failed, or success with items and a paging state.

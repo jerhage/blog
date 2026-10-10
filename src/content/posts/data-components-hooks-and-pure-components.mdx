@@ -5,10 +5,10 @@ published: 2026-10-09
 tags:
   - architecture
   - frontend
-  - svelte
+  - react
 ---
 
-Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and Svelte 5; in React the same parts are a render-prop component, a custom hook and a plain component.
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with TanStack Query and ts-pattern.
 
 ## Two kinds of state
 
@@ -47,50 +47,59 @@ cards -> failure "failed"
 cards -> grid "ready"
 ```
 
-Its state is a union, so the component cannot forget a case. The paged version nests the second lifecycle inside `ready`, because "loading more" cannot exist before anything has loaded.
+Its state is a union, so the component cannot forget a case. The paged version nests the second lifecycle inside `success`, because "loading more" cannot exist before anything has loaded.
 
 ```ts
-type ReadState<T> =
-  | { kind: 'loading' }
-  | { kind: 'failed'; failure: Failure }
-  | { kind: 'ready'; value: T };
+type ReadState<Result> =
+  | { type: 'loading' }
+  | { type: 'failed'; error: unknown }
+  | Result;
 
-type PagedReadState<T> =
-  | { kind: 'loading' }
-  | { kind: 'failed'; failure: Failure }
-  | { kind: 'ready'; items: T[]; next: 'more' | 'loading' | 'failed' | 'end' };
+type PagedReadState<Item> =
+  | { type: 'loading' }
+  | { type: 'failed'; error: unknown }
+  | { type: 'success'; items: Item[]; hasMore: boolean; paging: PagingState };
+
+type PagingState =
+  | { type: 'idle' }
+  | { type: 'loadingMore' }
+  | { type: 'failed'; message: string };
+```
+
+The data component matches the state with `match(...).exhaustive()`. It handles every variant itself, and a variant added later fails to compile here and nowhere else.
+
+```tsx
+function CardsData({ cards, query, children }: CardsDataProps) {
+  const { state, loadMore, reload } = usePagedReadState(searchCardsQuery(cards, query), CARD_PAGING);
+
+  return match(state)
+    .with({ type: 'loading' }, () => <Spinner />)
+    .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
+    .with({ type: 'success' }, ({ items }) => children({ cards: items, loadMore }))
+    .exhaustive();
+}
 ```
 
 The children never see these. A child that received a loading flag would have to decide what to draw while loading, and every screen would decide differently.
 
-```svelte
-<CardsData {cards} query={filter.query}>
-  {#snippet ready(items, loadMore)}
-    <CardGrid {items} onEnd={loadMore} />
-  {/snippet}
+```tsx
+<CardsData cards={cards} query={query}>
+  {({ cards, loadMore }) => <CardGrid cards={cards} onEnd={loadMore} />}
 </CardsData>
 ```
 
 ## A hook owns UI state for one concern
 
-A hook is a `createX()` function in a `.svelte.ts` file. It returns getters, so a caller always reads the current value. It never reads data and never calls a use case.
+A hook is a `useX()` function. It returns the value and a named setter for each change. It never reads data and never calls a use case, and it changes state in callbacks, not in effects.
 
 ```ts
-function createCardFilter() {
-  let text = $state('');
-  let pitch = $state<Pitch | 'any'>('any');
+function useCardFilter() {
+  const [text, setText] = useState('');
+  const [pitch, setPitch] = useState<Pitch | 'any'>('any');
 
-  return {
-    get query(): CardQuery {
-      return { text, pitch };
-    },
-    setText(next: string) {
-      text = next;
-    },
-    setPitch(next: Pitch | 'any') {
-      pitch = next;
-    },
-  };
+  const query: CardQuery = { text, pitch };
+
+  return { query, setText, setPitch };
 }
 ```
 
@@ -101,6 +110,20 @@ A rule that combines data and state is a pure function: `visibleCards(cards, fil
 ## Pure components
 
 A pure component takes props and reports what happened through callbacks. It never sees loading, failure or the cache.
+
+```tsx
+function CardGrid({ cards, onPick }: CardGridProps) {
+  return (
+    <ul>
+      {cards.map((card) => (
+        <li key={card.id}>
+          <button onClick={() => onPick(card)}>{card.name}</button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
 
 ```diagram
 title "Props in, callbacks out"
@@ -115,7 +138,7 @@ It can be written and tested as if the data always exists, because for this comp
 
 ## A write owns its state too
 
-Saving a deck is a write. Its owner, a write view model or a write data component, holds the in-flight state and the outcome of the use case. What reaches the button is a described action, not two booleans.
+Saving a deck is a write. Its owner, a write data component over `useWriteState`, holds the in-flight state and the outcome of the use case. What reaches the button is a described action, not two booleans.
 
 ```ts
 type SaveDeckAction = {
@@ -124,6 +147,19 @@ type SaveDeckAction = {
   message: string | null;
   save(): void;
 };
+```
+
+```tsx
+function DeckSaveData({ decks, draft, children }: DeckSaveDataProps) {
+  const { state, submit } = useWriteState(saveDeckMutation(decks));
+
+  return children({
+    label: saveLabel(state),
+    availability: state.type === 'saving' ? 'busy' : 'ready',
+    message: saveMessage(state),
+    save: () => submit(draft),
+  });
+}
 ```
 
 A `busy` flag and an `enabled` flag allow four combinations, and one of them, busy and enabled at once, means nothing. One stored value cannot hold it. The button derives its spinner and its disabled state from `availability`.

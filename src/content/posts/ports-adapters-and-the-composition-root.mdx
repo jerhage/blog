@@ -8,7 +8,7 @@ tags:
   - typescript
 ---
 
-Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The code examples use TypeScript.
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The code examples use TypeScript and React.
 
 ## A port is named for the need, an adapter for the mechanism
 
@@ -94,6 +94,14 @@ const container = {
   cards: { searchCards: (query) => searchCards({ catalog }, query) },
   decks: { saveDeck: (draft) => saveDeck(saveDeckDeps, draft) },
 };
+```
+
+Pages receive the container through React context, so a component asks for it and never imports an adapter.
+
+```tsx
+const ContainerContext = createContext(container);
+
+const useContainer = () => useContext(ContainerContext);
 ```
 
 ## What the container exposes

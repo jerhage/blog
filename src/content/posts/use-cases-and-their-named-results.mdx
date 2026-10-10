@@ -8,7 +8,7 @@ tags:
   - typescript
 ---
 
-Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript.
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with ts-pattern.
 
 ## One use case per operation
 
@@ -28,12 +28,12 @@ usecase -> clock
 
 ## Each one names its outcomes
 
-The result is a union discriminated on `kind`. The success variant names what it holds. Every expected outcome is a variant beside it.
+The result is a union discriminated on `type`. The success variant names what it holds. Every expected outcome is a variant beside it.
 
 ```ts
 type SaveDeckResult =
-  | { kind: 'saved'; deck: Deck }
-  | { kind: 'deck-too-large'; limit: number }
+  | { type: 'saved'; deck: Deck }
+  | { type: 'deck-too-large'; limit: number }
   | StorageUnavailable;
 ```
 
@@ -71,14 +71,14 @@ async function saveDeck(
   draft: DeckDraft,
 ): Promise<SaveDeckResult> {
   if (draft.cards.length > DECK_LIMIT) {
-    return { kind: 'deck-too-large', limit: DECK_LIMIT };
+    return { type: 'deck-too-large', limit: DECK_LIMIT };
   }
 
   const deck = buildDeck(draft, deps.now());
   const stored = await deps.decks.put(deck);
-  if (stored.kind !== 'success') return stored;
+  if (stored.type !== 'success') return stored;
 
-  return { kind: 'saved', deck: stored.deck };
+  return { type: 'saved', deck: stored.deck };
 }
 ```
 
@@ -86,17 +86,19 @@ After the `if`, `stored` is every variant of the port's answer except success. T
 
 ## Deciding what an outcome means
 
-Where each outcome gets a text or a recovery, the caller matches on `kind`, and the match is exhaustive.
+Where each outcome gets a text or a recovery, the caller matches on `type`, and the match is exhaustive.
 
-```ts
-const message = match(result)
-  .with({ kind: 'saved' }, () => 'Deck saved')
-  .with({ kind: 'deck-too-large' }, ({ limit }) => `At most ${limit} cards`)
-  .with({ kind: 'storage-unavailable' }, () => 'Storage is blocked')
-  .exhaustive();
+```tsx
+function saveMessage(result: SaveDeckResult) {
+  return match(result)
+    .with({ type: 'saved' }, () => 'Deck saved')
+    .with({ type: 'deck-too-large' }, ({ limit }) => `At most ${limit} cards`)
+    .with({ type: 'storage-unavailable' }, () => 'Storage is blocked')
+    .exhaustive();
+}
 ```
 
-A fourth outcome fails to compile in every caller that matches.
+A fourth outcome fails to compile in every caller that matches, so a new outcome cannot be forgotten. Without `.exhaustive()` the new case would fall through to a default branch and show nothing, or the wrong text, until someone noticed.
 
 ## Why not one `Result<T, E>`
 
