@@ -121,7 +121,7 @@ async function findCard(
 
 function cardQuery(id: CardId, capabilities: { cardFinder: CardFinder }) {
   return queryOptions({
-    queryKey: cardKeys.detail(id),
+    queryKey: cardsKeys.card(id),
     queryFn: ({ signal }) => findCard(id, capabilities, { signal }),
   });
 }

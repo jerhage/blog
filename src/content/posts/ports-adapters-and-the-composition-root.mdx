@@ -12,23 +12,41 @@ Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/).
 
 ## A port is named for the need, an adapter for the mechanism
 
-The `cards` domain needs to find cards. That need is the port, `CardCatalog`. The adapter is named for what it crosses to: an HTTP card API, a local fixture file.
+The `cards` domain needs to search cards. That need is the port, `CardSearcher`. The adapter is named for what it crosses to: an HTTP card API, a local fixture file.
 
 ```diagram
 title "One port, two adapters"
 direction down
-port "CardCatalog" detail "port, declared by the domain" tone primary
-http "HttpCardCatalog" detail "adapter: card API" tone accent
-fixture "FixtureCardCatalog" detail "adapter: local JSON file" tone accent
+port "CardSearcher" detail "port, declared by the domain" tone primary
+http "HttpCardRepository" detail "adapter: card API" tone accent
+fixture "FixtureCardRepository" detail "adapter: local JSON file" tone accent
 http -> port "implements"
 fixture -> port "implements"
 ```
 
 | Port (named for the need) | Adapter (named for the mechanism) |
 | --- | --- |
-| `CardCatalog` | `HttpCardCatalog`, `FixtureCardCatalog` |
-| `DeckRepository` | `IndexedDbDeckRepository` |
+| `CardSearcher`, `CardFinder` | `HttpCardRepository`, `FixtureCardRepository` |
+| `DeckFinder`, `DeckSaver` | `IndexedDbDeckRepository` |
 | `Clock` | `SystemClock`, `FixedClock` |
+
+## A repository satisfies several small ports
+
+Each port holds one need. A repository groups the ports of one kind of data, and one adapter implements it.
+
+```ts
+type CardFinder = {
+  get(id: CardId, options?: ReadOptions): Promise<Card | null>;
+};
+
+type CardSearcher = {
+  search(query: CardQuery, page: PageCursor, options?: ReadOptions): Promise<Page<Card>>;
+};
+
+type CardRepository = CardFinder & CardSearcher;
+```
+
+A use case or a data component asks for the one port it needs. Anything that holds a `CardRepository` can pass it there, because it satisfies every port in the group.
 
 An adapter is named for the store or device it crosses to, not the library it uses on the way. If the decks live in IndexedDB and a helper library wraps it, the adapter is still `IndexedDbDeckRepository`. Swapping the helper renames nothing.
 
@@ -37,15 +55,17 @@ An adapter is named for the store or device it crosses to, not the library it us
 The use case sees only the port, so a test hands it the fixture adapter and the app hands it the HTTP one.
 
 ```ts
-type CardCatalog = {
-  search(query: CardQuery, options: ReadOptions): Promise<SearchCardsResult>;
-};
+async function searchCards(
+  query: CardQuery,
+  page: PageCursor,
+  { cardSearcher }: SearchCardsCapabilities,
+  options?: ReadOptions,
+): Promise<SearchCardsResult> {
+  return { type: 'success', page: await cardSearcher.search(query, page, options) };
+}
 
-const searchCards = (deps: { catalog: CardCatalog }, query: CardQuery) =>
-  deps.catalog.search(query, {});
-
-const inTest = { catalog: new FixtureCardCatalog(fixtureCards) };
-const inApp = { catalog: new HttpCardCatalog(fetch) };
+const inTest = { cardSearcher: new FixtureCardRepository(fixtureCards) };
+const inApp = { cardSearcher: new HttpCardRepository(fetch) };
 ```
 
 An adapter catches a failure only to translate it into an answer the caller can act on, such as a blocked store. Anything else throws to a boundary.
@@ -55,44 +75,45 @@ An adapter catches a failure only to translate it into an answer the caller can 
 The clock, an id generator and a random source reach outside the program like storage does. Each is a port, so a test can fix them.
 
 ```ts
-type SaveDeckDeps = {
-  decks: DeckRepository;
-  now: () => number;
-  newId: () => DeckId;
+type SaveDeckCapabilities = {
+  clock: Clock;
+  deckSaver: DeckSaver;
+  idGenerator: IdGenerator;
 };
 
-const saveDeck = (deps: SaveDeckDeps, draft: DeckDraft) => {
-  const deck = { ...draft, id: deps.newId(), savedAt: deps.now() };
-  return deps.decks.put(deck);
-};
+function saveDeck(draft: DeckDraft, { clock, deckSaver, idGenerator }: SaveDeckCapabilities) {
+  const deck = { ...draft, id: idGenerator.deckId(), savedAt: clock.now() };
+  return deckSaver.put(deck);
+}
 ```
 
 With a fixed clock and ids handed out in sequence, a test can assert on the exact deck it gets back.
 
 ## The composition root builds every adapter
 
-One file creates the adapters and binds them into use cases. No other module imports an adapter.
+One file creates the adapters and puts them in a container. No other module imports an adapter.
 
 ```diagram
 title "Only the composition root touches adapters"
 direction down
-root "Composition root" detail "builds adapters, binds use cases" tone warning
-adapters "Adapters" detail "HTTP, IndexedDB, fixture" tone accent
-usecases "Use cases" detail "receive ports" tone primary
-screens "Pages and UI" detail "receive use cases" tone success
+root "Composition root" detail "builds adapters" tone warning
+adapters "Repositories" detail "HTTP, IndexedDB, fixture" tone accent
+screens "Pages" detail "take repositories from the container" tone success
+data "Data components" detail "take one port each" tone primary
+usecases "Use cases" detail "called with ports by query factories" tone primary
 root -> adapters "builds"
-root -> usecases "binds ports"
-root -> screens "container"
+adapters -> screens "container"
+screens -> data "a repository as a port"
+data -> usecases "through a query factory"
 ```
 
 ```ts
-const catalog = new HttpCardCatalog(fetch);
-const decks = new IndexedDbDeckRepository(database);
-const saveDeckDeps = { decks, now: Date.now, newId };
-
 const container = {
-  cards: { searchCards: (query) => searchCards({ catalog }, query) },
-  decks: { saveDeck: (draft) => saveDeck(saveDeckDeps, draft) },
+  cards: { cardRepository: new HttpCardRepository(fetch) },
+  decks: { deckRepository: new IndexedDbDeckRepository(database) },
+  notes: { noteRepository: new IndexedDbNoteRepository(database) },
+  clock: new SystemClock(),
+  idGenerator: new CryptoIdGenerator(),
 };
 ```
 
@@ -104,17 +125,24 @@ const ContainerContext = createContext(container);
 const useContainer = () => useContext(ContainerContext);
 ```
 
+```tsx
+function DeckBuilderPage() {
+  const { cardRepository } = useContainer().cards;
+  const filter = useCardFilter();
+
+  return (
+    <CardsData cardSearcher={cardRepository} query={filter.query}>
+      {({ cards, loadMore }) => <CardGrid cards={cards} onEnd={loadMore} />}
+    </CardsData>
+  );
+}
+```
+
+The page passes `cardRepository` where `CardsData` asks for a `CardSearcher`. `CardsData` never learns which adapter it holds.
+
 ## What the container exposes
 
-There are two ways to shape it.
-
-| | Exposes use cases | Exposes capabilities (the ports) |
-| --- | --- | --- |
-| A screen can call a port | no, the type has none | yes, a convention has to stop it |
-| Where a use case's dependencies are built | in the root | where the use case is called |
-| Size of the root | grows with every use case | grows with the adapters |
-
-Exposing use cases makes "a screen never reaches a port" a type error. Exposing capabilities keeps the root small and leaves that rule to review.
+The container holds repositories and other adapters. It holds no use cases. A query factory or a mutation calls a use case with the ports it needs, at the place where it is called.
 
 ## A heavy adapter loads on demand
 

@@ -66,11 +66,20 @@ type PagingState =
   | { type: 'failed'; message: string };
 ```
 
-The data component matches the state with `match(...).exhaustive()`. It handles every variant itself, and a variant added later fails to compile here and nowhere else.
+The data component takes the port its read needs, `CardSearcher`, and the query factory calls the use case with it. It matches the state with `match(...).exhaustive()`. It handles every variant itself, and a variant added later fails to compile here and nowhere else.
 
 ```tsx
-function CardsData({ cards, query, children }: CardsDataProps) {
-  const { state, loadMore, reload } = usePagedReadState(searchCardsQuery(cards, query), CARD_PAGING);
+type CardsDataProps = {
+  cardSearcher: CardSearcher;
+  query: CardQuery;
+  children: (ready: { cards: Card[]; loadMore: () => void }) => ReactNode;
+};
+
+function CardsData({ cardSearcher, query, children }: CardsDataProps) {
+  const { state, loadMore, reload } = usePagedReadState(
+    searchCardsQuery(query, { cardSearcher }),
+    CARD_PAGING,
+  );
 
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
@@ -83,10 +92,12 @@ function CardsData({ cards, query, children }: CardsDataProps) {
 The children never see these. A child that received a loading flag would have to decide what to draw while loading, and every screen would decide differently.
 
 ```tsx
-<CardsData cards={cards} query={query}>
+<CardsData cardSearcher={cardRepository} query={query}>
   {({ cards, loadMore }) => <CardGrid cards={cards} onEnd={loadMore} />}
 </CardsData>
 ```
+
+The page takes `cardRepository` from the container. It satisfies `CardSearcher`, so the page passes it straight in.
 
 ## A hook owns UI state for one concern
 
@@ -150,8 +161,8 @@ type SaveDeckAction = {
 ```
 
 ```tsx
-function DeckSaveData({ decks, draft, children }: DeckSaveDataProps) {
-  const { state, submit } = useWriteState(saveDeckMutation(decks));
+function DeckSaveData({ clock, deckSaver, idGenerator, draft, children }: DeckSaveDataProps) {
+  const { state, submit } = useWriteState(saveDeckMutation({ clock, deckSaver, idGenerator }));
 
   return children({
     label: saveLabel(state),

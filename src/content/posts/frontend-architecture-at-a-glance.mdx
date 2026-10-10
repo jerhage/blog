@@ -12,17 +12,17 @@ The running example is a deck builder for Flesh and Blood: search cards, see whi
 
 ## 1. Ports and adapters
 
-A domain declares what it needs as a port, named for the need. An adapter is the "how" behind it, named for the mechanism.
+A domain declares what it needs as a port, named for the need. An adapter is the "how" behind it, named for the mechanism. One adapter, a repository, often satisfies several small ports.
 
 ```diagram
 title "The cards domain and its outside world"
 direction down
 group cards "cards domain" tone primary {
   search "Search cards" detail "use case"
-  port "CardCatalog" detail "port" tone primary
+  port "CardSearcher" detail "port" tone primary
 }
 group outside "outside" {
-  adapter "Card API adapter" detail "adapter" tone accent
+  adapter "HTTP card repository" detail "adapter" tone accent
   api "Card API" detail "HTTP"
 }
 search -> port "needs"
@@ -31,12 +31,21 @@ adapter -> api "fetches"
 ```
 
 ```ts
-type CardCatalog = {
-  search(query: CardQuery, page: PageCursor, options: ReadOptions): Promise<SearchCardsResult>;
+type CardSearcher = {
+  search(query: CardQuery, page: PageCursor, options?: ReadOptions): Promise<Page<Card>>;
 };
+
+async function searchCards(
+  query: CardQuery,
+  page: PageCursor,
+  { cardSearcher }: SearchCardsCapabilities,
+  options?: ReadOptions,
+): Promise<SearchCardsResult> {
+  return { type: 'success', page: await cardSearcher.search(query, page, options) };
+}
 ```
 
-The use case only knows `CardCatalog`. Swapping the HTTP API for a local file is a new adapter, with no change above it.
+The use case only knows `CardSearcher`. Swapping the HTTP API for a local file is a new adapter, with no change above it.
 
 ## 2. Domains form a graph
 
@@ -66,15 +75,15 @@ A dependency checker fails the build when an import breaks a rule, so a cycle ca
 
 ## 3. Composition at the page
 
-One file, the composition root, builds every adapter and hands out use cases. Nothing else creates an adapter.
+One file, the composition root, builds every adapter and puts it in a container. Nothing else creates an adapter.
 
 ```ts
-const catalog = new HttpCardCatalog(fetch);
-const deckStore = new IndexedDbDeckRepository(database);
-
 const container = {
-  cards: { searchCards: (query, page, options) => searchCards({ catalog }, query, page, options) },
-  decks: { saveDeck: (deck) => saveDeck({ deckStore }, deck) },
+  cards: { cardRepository: new HttpCardRepository(fetch) },
+  decks: { deckRepository: new IndexedDbDeckRepository(database) },
+  notes: { noteRepository: new IndexedDbNoteRepository(database) },
+  clock: new SystemClock(),
+  idGenerator: new CryptoIdGenerator(),
 };
 ```
 
@@ -86,7 +95,7 @@ const ContainerContext = createContext(container);
 const useContainer = () => useContext(ContainerContext);
 ```
 
-A page is thin. It takes the container and puts domains side by side. The card details panel in `cards` knows nothing about notes. It offers a slot, a prop that takes any UI, and draws whatever it gets.
+A page is thin. It takes repositories from the container, hands each data component the one it needs, and puts domains side by side. The card details panel in `cards` knows nothing about notes. It offers a slot, a prop that takes any UI, and draws whatever it gets.
 
 ```tsx
 function CardDetails({ card, extra }: { card: Card; extra: ReactNode }) {
@@ -105,7 +114,7 @@ The card page is the one place that knows both domains. It fills the slot with t
 function CardPage({ card }: { card: Card }) {
   const { notes } = useContainer();
 
-  return <CardDetails card={card} extra={<CardNotesData notes={notes} cardId={card.id} />} />;
+  return <CardDetails card={card} extra={<CardNotesData noteLister={notes.noteRepository} cardId={card.id} />} />;
 }
 ```
 
@@ -115,7 +124,7 @@ direction down
 page "Card page" detail "knows both domains" tone warning
 panel "Card details panel" detail "cards UI, has a slot" tone primary
 notes "Card notes component" detail "notes UI" tone accent
-root "Composition root" detail "adapters to use cases"
+root "Composition root" detail "builds the repositories"
 root -> page "container"
 page -> panel "renders"
 page -> notes "builds"
@@ -145,11 +154,14 @@ grid -> hook "filter changed"
 | Hook | UI state for one concern: filter text, selection, open sheet | Calls a use case or reads a query |
 | Pure component | Nothing: props in, callbacks out | Sees loading or errors |
 
-The data component owns the read and draws its loading and failure states. Its children only ever get ready data.
+The data component takes a port, not an adapter. It owns the read and draws its loading and failure states. Its children only ever get ready data.
 
 ```tsx
-function CardsData({ cards, query, children }: CardsDataProps) {
-  const { state, loadMore, reload } = usePagedReadState(searchCardsQuery(cards, query), CARD_PAGING);
+function CardsData({ cardSearcher, query, children }: CardsDataProps) {
+  const { state, loadMore, reload } = usePagedReadState(
+    searchCardsQuery(query, { cardSearcher }),
+    CARD_PAGING,
+  );
 
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
@@ -159,7 +171,7 @@ function CardsData({ cards, query, children }: CardsDataProps) {
 }
 ```
 
-`state` is a `PagedReadState`: `loading`, `failed`, or `success` with the items and a `paging` state (`idle`, `loadingMore` or `failed`).
+`searchCardsQuery` is a query factory: its loader calls the `searchCards` use case with the port. `state` is a `PagedReadState`: `loading`, `failed`, or `success` with the items and a `paging` state (`idle`, `loadingMore` or `failed`).
 
 The hook holds the filter and nothing else:
 
@@ -213,7 +225,7 @@ participant grid "Card grid" tone primary
 participant hook "Filter hook"
 participant data "Cards data component" tone accent
 participant usecase "Search use case"
-participant adapter "Card API adapter"
+participant adapter "HTTP card repository"
 grid -> hook "Reader types a card name"
 hook -> data "New query"
 data -> usecase "Read through the query cache"

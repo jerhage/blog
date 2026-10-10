@@ -42,12 +42,12 @@ An expected failure is a named variant of the result, so it travels up as data. 
 ```diagram
 title "Two routes for a failure"
 direction down
-adapter "Card API adapter" detail "classifies the response" tone accent
-usecase "getCard use case" detail "passes variants on" tone primary
+adapter "HTTP card repository" detail "classifies the response" tone accent
+usecase "findCard use case" detail "names the outcome" tone primary
 data "Card data component" detail "matches every variant" tone primary
 pure "Card view" detail "ready card only" tone success
 boundary "Failure boundary" detail "logs once, shows a failure" tone danger
-adapter -> usecase "expected: a variant"
+adapter -> usecase "expected: an answer"
 usecase -> data "expected: a variant"
 data -> pure "found: the card"
 adapter -> boundary "unexpected: throws"
@@ -55,23 +55,21 @@ adapter -> boundary "unexpected: throws"
 
 ## The adapter classifies
 
-The adapter names the few outcomes the screen can use and sends everything else to the default: not OK means unexpected. It never lists every status code.
+The adapter turns the few outcomes the screen can use into answers and sends everything else to the default: not OK means unexpected. It never lists every status code. Here it implements the `CardFinder` port, which answers a missing card with `null`.
 
 ```ts
-type CardLookup =
-  | { type: 'found'; card: Card }
-  | { type: 'card-not-found' };
+class HttpCardRepository implements CardFinder {
+  async get(id: CardId, options?: ReadOptions): Promise<Card | null> {
+    let body: unknown;
+    try {
+      body = await fetchJson(`/cards/${id}`, options);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) return null;
+      throw error;
+    }
 
-async function lookUpCard(id: CardId): Promise<CardLookup> {
-  let body: unknown;
-  try {
-    body = await fetchJson(`/cards/${id}`);
-  } catch (error) {
-    if (error instanceof HttpError && error.status === 404) return { type: 'card-not-found' };
-    throw error;
+    return parseCard(body);
   }
-
-  return { type: 'found', card: parseCard(body) };
 }
 ```
 
@@ -95,18 +93,35 @@ json -> parse
 parse -> card
 ```
 
+## The use case names the outcome
+
+The use case turns the port's `null` into a named variant.
+
+```ts
+type FindCardResult = { type: 'success'; card: Card } | { type: 'not-found' };
+
+async function findCard(
+  id: CardId,
+  { cardFinder }: FindCardCapabilities,
+  options?: ReadOptions,
+): Promise<FindCardResult> {
+  const card = await cardFinder.get(id, options);
+  return card ? { type: 'success', card } : { type: 'not-found' };
+}
+```
+
 ## The data component draws each one
 
-The data component matches every variant, so each expected failure gets a view of its own. The unexpected `failed` state is the one generic branch.
+The data component takes the `CardFinder` port, and its query factory calls `findCard` with it. It matches every variant, so each expected failure gets a view of its own. The unexpected `failed` state is the one generic branch.
 
 ```tsx
-function CardData({ catalog, id, children }: CardDataProps) {
-  const { state, reload } = useReadState(cardQuery(catalog, id));
+function CardData({ cardFinder, id, children }: CardDataProps) {
+  const { state, reload } = useReadState(cardQuery(id, { cardFinder }));
 
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
-    .with({ type: 'found' }, ({ card }) => children(card))
-    .with({ type: 'card-not-found' }, () => <Notice text="No card has this id." />)
+    .with({ type: 'success' }, ({ card }) => children(card))
+    .with({ type: 'not-found' }, () => <Notice text="No card has this id." />)
     .with({ type: 'failed' }, () => <ErrorState onRetry={reload} />)
     .exhaustive();
 }
@@ -119,15 +134,15 @@ An expected failure resolves the query, so retries and caching treat it as an an
 ```steps
 sequence
 title "One card read, two endings"
-participant adapter "Card API adapter" tone accent
-participant usecase "getCard use case" tone primary
+participant adapter "HTTP card repository" tone accent
+participant usecase "findCard use case" tone primary
 participant data "Card data component" tone primary
 participant boundary "Failure boundary"
 data -> usecase "Read card 4711"
 usecase -> adapter "Ask the port"
 adapter -> adapter "A 404 becomes an answer"
-adapter --> usecase "card-not-found"
-usecase --> data "card-not-found"
+adapter --> usecase "null"
+usecase --> data "not-found"
 data -> data "Draws the not-found notice"
 data -> usecase "Read card 4712"
 usecase -> adapter "Ask the port"
@@ -137,7 +152,7 @@ usecase --> data "Rejects: no answer"
 data --> boundary "Failed state, logged once"
 step "The component asks for a card." : 1 2
 step "The adapter sees a 404. For an id from the route that is an answer, not a fault." : 3
-step "The answer travels up as a named variant." : 4 5
+step "The adapter answers null. The use case names it not-found." : 4 5
 step "The component has a branch for it and explains it to the reader." : 6
 step "Another read starts." : 7 8
 step "The response is not a card. No caller can fix that, so the adapter throws." : 9
@@ -152,7 +167,7 @@ A new expected outcome is a new variant. The compiler then lists every `match` t
 ```diagram
 title "A new variant finds every match"
 direction down
-variant "rate-limited" detail "added to CardLookup" tone warning
+variant "rate-limited" detail "added to FindCardResult" tone warning
 data "Card data component" detail "fails to compile" tone accent
 page "Card page" detail "fails to compile" tone accent
 variant -> data

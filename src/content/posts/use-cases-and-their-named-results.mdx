@@ -19,13 +19,13 @@ Each use case gets its own file, even when it only wraps one port call. It is st
 ```diagram
 title "A use case between the screen and the ports"
 direction down
-screen "Data component or write owner" tone success
+screen "Query factory or mutation" detail "called by a data component" tone success
 usecase "saveDeck" detail "business rules: the deck limit" tone primary
-decks "DeckRepository" detail "port to the data access layer"
+decks "DeckSaver" detail "port to the data access layer"
 clock "Clock" detail "port"
 screen -> usecase "calls"
-usecase -> decks
-usecase -> clock
+usecase -> decks "put"
+usecase -> clock "now"
 ```
 
 ## Each one names its outcomes
@@ -69,15 +69,15 @@ One question sorts them: can the caller do something meaningful with it? If yes,
 
 ```ts
 async function saveDeck(
-  deps: SaveDeckDeps,
   draft: DeckDraft,
+  { clock, deckSaver, idGenerator }: SaveDeckCapabilities,
 ): Promise<SaveDeckResult> {
   if (draft.cards.length > DECK_LIMIT) {
     return { type: 'deck-too-large', limit: DECK_LIMIT };
   }
 
-  const deck = buildDeck(draft, deps.now());
-  const stored = await deps.decks.put(deck);
+  const deck = buildDeck(draft, idGenerator.deckId(), clock.now());
+  const stored = await deckSaver.put(deck);
   if (stored.type !== 'success') return stored;
 
   return { type: 'saved', deck: stored.deck };

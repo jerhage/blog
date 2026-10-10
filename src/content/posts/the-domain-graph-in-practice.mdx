@@ -33,7 +33,7 @@ usecases "use-cases" tone primary
 adapters "adapters" tone accent
 domain "domain" detail "pure, imports nothing above" tone primary
 ui -> queries
-queries -> usecases "types only"
+queries -> usecases "calls"
 usecases -> domain
 adapters -> domain
 ui -> domain
@@ -44,7 +44,7 @@ ui -> domain
 | `domain` | itself, shared types | use cases, adapters, queries, UI |
 | `use-cases` | `domain` | adapters, queries |
 | `adapters` | `domain` | queries |
-| `queries` | `domain`, use case types | UI, adapters |
+| `queries` | `domain`, `use-cases` | UI, adapters |
 | `ui` | `domain`, `queries` | adapters |
 
 ## Between domains

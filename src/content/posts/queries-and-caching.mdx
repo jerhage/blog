@@ -28,16 +28,16 @@ factory -> usecase "loader calls"
 ```
 
 ```ts
-function cardQuery(cards: CardReads, id: CardId) {
+function cardQuery(id: CardId, capabilities: FindCardCapabilities) {
   return queryOptions({
     queryKey: cardsKeys.card(id),
-    queryFn: ({ signal }) => cards.readCard(id, { signal }),
+    queryFn: ({ signal }) => findCard(id, capabilities, { signal }),
     staleTime: LOCAL_STALE_TIME,
   });
 }
 ```
 
-A factory takes the use cases it calls as a small structural type, `CardReads`, never the whole container. It never imports UI or the composition root, and a test passes a plain object.
+A factory takes the ports its use case needs, `{ cardFinder }`, never the whole container. The data component hands them in, and the loader calls the use case with them. A factory never imports UI or the composition root, and a test passes a plain object.
 
 ## Keys form a hierarchy
 
@@ -112,8 +112,8 @@ usecase -> cache
 An expected outcome resolves as data, because a cache retries and remembers rejections. A deck that is not found is a result, cached like any other, and the data component matches it exhaustively.
 
 ```tsx
-function DeckData({ decks, id, children }: DeckDataProps) {
-  const { state, reload } = useReadState(deckQuery(decks, id));
+function DeckData({ deckFinder, id, children }: DeckDataProps) {
+  const { state, reload } = useReadState(deckQuery(id, { deckFinder }));
 
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
@@ -133,11 +133,11 @@ type Page<T> = { items: T[]; next: Cursor | null };
 
 const firstPage: Cursor | null = null;
 
-function searchCardsPagedQuery(cards: CardReads, query: CardQuery) {
+function searchCardsQuery(query: CardQuery, capabilities: SearchCardsCapabilities) {
   return infiniteQueryOptions({
     queryKey: cardsKeys.search(query),
     queryFn: ({ pageParam, signal }) =>
-      cards.searchCards(query, pageParam, { signal }),
+      searchCards(query, pageParam, capabilities, { signal }),
     initialPageParam: firstPage,
     getNextPageParam: (last) => last.next,
   });
