@@ -45,6 +45,15 @@ describe('diagramBlocks', () => {
 		takeDiagramFailures();
 	});
 
+	it('replaces a packet block with its labelled rows and no script', async () => {
+		const html = await render(
+			'```packet\ntitle "Header"\nbits 32\noffsets 0 16\nrow "Type" 8 tone primary | "Reserved" 24\n```',
+		);
+		expect(html).toMatch(/<div class="packet-block"><div[^>]*class="packet"[^>]*aria-label="Header"/u);
+		expect(html).toContain('Reserved');
+		expect(html).not.toContain('<script');
+	});
+
 	it('leaves other code blocks untouched', async () => {
 		const html = await render('```bash\nip a\n```');
 		expect(html).toContain('<pre><code class="language-bash">ip a');

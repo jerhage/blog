@@ -4,7 +4,8 @@ import { defineMdastPlugin } from 'satteri';
 import { recordDiagramFailure } from './build-guard';
 import { layoutDiagram } from './layout';
 import { parseDiagram } from './parse';
-import { renderDiagram, renderSequence } from './render';
+import { parsePacket } from './packet-parse';
+import { renderDiagram, renderPacket, renderSequence } from './render';
 import { parseSequence } from './sequence-parse';
 import type { SourceError } from './tokens';
 
@@ -29,9 +30,17 @@ async function sequenceHtml(text: string, idPrefix: string): Promise<BlockOutcom
 	return { kind: 'html', html };
 }
 
+async function packetHtml(text: string, idPrefix: string): Promise<BlockOutcome> {
+	const parsed = parsePacket(text);
+	if (parsed.kind === 'failure') return parsed;
+	const html = await renderPacket(parsed.source, idPrefix);
+	return { kind: 'html', html };
+}
+
 const BLOCK_RENDERERS: Readonly<Record<string, BlockRenderer | undefined>> = {
 	diagram: diagramHtml,
 	sequence: sequenceHtml,
+	packet: packetHtml,
 };
 
 function bodyLineOffset(file: string | undefined, body: string): number {

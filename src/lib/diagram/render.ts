@@ -5,6 +5,7 @@ import { render } from 'svelte/server';
 import { createServer } from 'vite';
 import type { ViteDevServer } from 'vite';
 import type { DiagramLayout } from './layout';
+import type { PacketSource } from './packet-parse';
 import type { SequenceSource } from './sequence-parse';
 
 const COMPONENT_FILES = {
@@ -56,6 +57,11 @@ function renderSequence(source: SequenceSource, idPrefix: string): Promise<strin
 	return renderComponent('sequence', { label: title, participants, steps }, idPrefix);
 }
 
+function renderPacket(source: PacketSource, idPrefix: string): Promise<string> {
+	const { title, bits, offsets, rows } = source;
+	return renderComponent('packet', { label: title, bits, offsets, rows }, idPrefix);
+}
+
 async function closeDiagramRenderer(): Promise<void> {
 	if (loading === undefined) return;
 	const server = await loading;
@@ -63,4 +69,4 @@ async function closeDiagramRenderer(): Promise<void> {
 	await server.close();
 }
 
-export { closeDiagramRenderer, renderDiagram, renderSequence };
+export { closeDiagramRenderer, renderDiagram, renderPacket, renderSequence };
