@@ -1,0 +1,134 @@
+---
+title: "Queries and caching"
+description: How reads become cached queries built from use cases, how keys and invalidation work, and how paging fits in.
+published: 2026-10-09
+tags:
+  - architecture
+  - frontend
+  - typescript
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and TanStack Query; any query cache has the same parts.
+
+## A query factory per read
+
+A data component never builds a cache entry by hand. A query factory in the domain's `queries/` folder bundles the three things a read needs: a key, a function that loads it, and how long the answer stays fresh. The loading function calls a use case.
+
+```diagram
+title "Where a query factory sits"
+direction down
+data "Data component" detail "owns the read" tone success
+factory "Query factory" detail "key, loader, freshness" tone primary
+cache "Query cache" tone accent
+usecase "Use case" detail "named result"
+data -> factory "asks for options"
+data -> cache "reads through"
+cache -> factory "uses on a miss"
+factory -> usecase "loader calls"
+```
+
+```ts
+function cardQuery(cards: CardReads, id: CardId) {
+  return queryOptions({
+    queryKey: cardsKeys.card(id),
+    queryFn: ({ signal }) => cards.readCard(id, { signal }),
+    staleTime: LOCAL_STALE_TIME,
+  });
+}
+```
+
+A factory takes the use cases it calls as a small structural type, `CardReads`, never the whole container. It never imports UI or the composition root, and a test passes a plain object.
+
+## Keys form a hierarchy
+
+Every key of a domain starts with the same prefix, so one call can reach a whole branch.
+
+```diagram
+title "Cache keys as a tree"
+direction down
+all "decks" detail "all()" tone primary
+list "decks / list" tone accent
+detail "decks / detail / id" tone accent
+all -> list
+all -> detail
+```
+
+```ts
+const decksKeys = {
+  all: () => ['decks'] as const,
+  list: () => [...decksKeys.all(), 'list'] as const,
+  detail: (id: DeckId) => [...decksKeys.all(), 'detail', id] as const,
+};
+```
+
+## A write invalidates after it settles
+
+```steps
+sequence
+title "Saving a deck refreshes what shows it"
+participant owner "Write owner" tone primary
+participant usecase "Save deck use case"
+participant cache "Query cache" tone accent
+participant list "Deck list read"
+owner -> usecase "Save the deck"
+usecase --> owner "A named result"
+owner -> cache "Mark every decks key stale"
+cache -> list "Refetch the active read"
+list --> cache "Fresh decks"
+step "The write owner runs the use case." : 1
+step "Saved, or a named refusal. Both are answers, not throws." : 2
+step "After the write settles, in every case, the owner invalidates the whole decks branch." : 3
+step "Only reads that are on screen refetch. The rest wait until used." : 4 5
+```
+
+The invalidation belongs to whoever owns the write, and it runs whatever the outcome: a refusal and a throw both leave the cache needing a check against the store. A domain never invalidates another domain's keys. The route passes a callback instead.
+
+## Stale time follows the data
+
+| Data | Where it lives | Stale time |
+| --- | --- | --- |
+| Owned cards, saved decks | the device | short: a read is cheap, so it stays accurate |
+| Card search results | a remote API | longer: a request costs, and cards change rarely |
+| The current filter | UI state | not a query at all |
+
+A read of a local store needs none of the cache's network policies: no retries, no refetch when the tab regains focus. Those are set once for the whole app, and each factory sets only its own stale time.
+
+## The cache holds parsed domain data
+
+The cache holds what the use case returned: domain values and named results. A raw HTTP response never reaches it. The adapter parses the response, and anything that does not match throws at that boundary instead of being cached as truth.
+
+```diagram
+title "Raw data stops at the adapter"
+direction down
+api "Card API" detail "raw response"
+adapter "Adapter" detail "parses, validates" tone accent
+usecase "Use case" detail "domain data" tone primary
+cache "Cache" detail "domain data only" tone success
+api -> adapter
+adapter -> usecase
+usecase -> cache
+```
+
+An expected outcome resolves as data, because a cache retries and remembers rejections. A deck that is not found is a result, cached like any other.
+
+## Paging
+
+A paged read has its own factory and a cursor. The cursor is opaque: the adapter makes it, the cache hands it back for the next page, and no component reads inside it.
+
+```ts
+type Page<T> = { items: T[]; next: Cursor | null };
+
+const firstPage: Cursor | null = null;
+
+function searchCardsPagedQuery(cards: CardReads, query: CardQuery) {
+  return infiniteQueryOptions({
+    queryKey: cardsKeys.search(query),
+    queryFn: ({ pageParam, signal }) =>
+      cards.searchCards(query, pageParam, { signal }),
+    initialPageParam: firstPage,
+    getNextPageParam: (last) => last.next,
+  });
+}
+```
+
+A paged data component reads it through a paged adapter that turns the cache's result into `PagedReadState`: loading, failed, or ready with items and what happens next.
