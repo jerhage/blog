@@ -36,7 +36,7 @@ The result is a union discriminated on `type`. The success variant names what it
 type SaveDeckResult =
   | { type: 'saved'; deck: Deck }
   | { type: 'deck-too-large'; limit: number }
-  | StorageUnavailable;
+  | { type: 'storage-unavailable' };
 ```
 
 ```diagram
@@ -51,7 +51,7 @@ save -> large
 save -> storage
 ```
 
-An expected outcome is one the caller can do something about: tell the person the deck is too big, or that a private window blocks storage. `StorageUnavailable` is shared, because every domain that stores anything can return it.
+An expected outcome is one the caller can do something about: tell the person the deck is too big, or that a private window blocks storage.
 
 ## Expected or unexpected
 
