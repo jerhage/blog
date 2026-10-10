@@ -11,54 +11,129 @@ tags:
 import Diagram from '../../kandan/components/Diagram.svelte';
 import { MESH_PRIMER } from '../../diagrams/mesh-primer';
 
-A VPN makes devices on different networks behave as if they shared one private network. Each device gets a private address on that network, and traffic between those addresses travels through encrypted tunnels across the internet. Hub-and-spoke and mesh VPNs build the same kind of tunnel. They differ in where the tunnels go, and that decides which path every packet takes.
+A VPN gives devices on different networks private addresses on one shared network. Hub-and-spoke and mesh VPNs build the same kind of tunnel. They differ in where the tunnels go.
 
 ## What a tunnel does
 
-When an application sends data to a private address, it builds an ordinary packet: from my private address, to your private address. The internet cannot deliver that packet, because private addresses only mean something inside the VPN. So the VPN software encrypts the whole packet and puts it inside a new one, addressed from this device's public internet address to the other end of the tunnel. The internet delivers the outer packet. The other end removes the wrapping, decrypts the original packet, and handles it as if it had arrived on a local network.
+The laptop sends a normal packet to the phone's private address. The VPN encrypts it and wraps it in a packet the internet can deliver.
 
-Each end keeps a table that pairs private addresses with tunnels: which private addresses live behind which tunnel, and which public address that tunnel currently leads to. Every routing decision in a VPN comes from that table.
+```diagram
+title "A packet inside a tunnel"
+direction right
+group outer "Outer packet: 198.51.100.7 to 192.0.2.10 (public, readable)" tone accent {
+  inner "Inner packet" detail "10.8.0.2 to 10.8.0.3, encrypted" tone primary
+}
+```
+
+The other end of the tunnel removes the outer packet, decrypts the inner one, and delivers it.
 
 ## Hub and spoke
 
-In a hub-and-spoke VPN, every device opens one tunnel, to a central server: the hub. A device's table is one line long. Everything for the private network goes into the tunnel to the hub.
+Every device has one tunnel, to the hub.
 
 ```diagram
 title "Hub and spoke: every tunnel ends at the hub"
 direction right
-laptop "Laptop" tone primary
-phone "Phone" tone primary
-hub "Hub" tone warning
-server "Server" tone primary
+laptop "Laptop" detail "10.8.0.2" tone primary
+phone "Phone" detail "10.8.0.3" tone primary
+hub "Hub" detail "10.8.0.1" tone warning
+server "Server" detail "10.8.0.9" tone primary
 laptop <-> hub
 phone <-> hub
 hub <-> server
 ```
 
-The hub holds the full table. When a packet arrives, the hub decrypts it and reads where it is going. It then looks up which tunnel leads to that private address, encrypts the packet again for that device, and sends it on. A reply takes the same route in reverse. The hub sees the reply's private destination, finds the tunnel that belongs to it, and sends the reply down that tunnel to the device's last known public address.
+The hub keeps the only full table. It maps each private address to a tunnel and to the public address where that tunnel ends.
 
-So every exchange between two devices crosses the hub twice, once in each direction, even when both devices sit in the same room. The hub also does all of the encryption work for everyone. The upside of this shape is that all traffic meets in one place. There is one machine to configure, one place to watch or filter traffic, and one exit to the internet.
+| Private address | Tunnel | Last seen at |
+| --- | --- | --- |
+| 10.8.0.2 | Laptop | 198.51.100.7:51820 |
+| 10.8.0.3 | Phone | 203.0.113.20:41641 |
+| 10.8.0.9 | Server | 192.0.2.44:51820 |
+
+In WireGuard, that table is the hub's list of peers:
+
+```ini
+[Interface]
+Address = 10.8.0.1/24
+ListenPort = 51820
+
+[Peer]
+PublicKey = laptop-public-key
+AllowedIPs = 10.8.0.2/32
+
+[Peer]
+PublicKey = phone-public-key
+AllowedIPs = 10.8.0.3/32
+
+[Peer]
+PublicKey = server-public-key
+AllowedIPs = 10.8.0.9/32
+```
+
+A message from the laptop to the phone, and the reply, both pass through the hub:
+
+```sequence
+title "Laptop to phone through the hub"
+participant laptop "Laptop" tone primary
+participant hub "Hub" tone accent
+participant phone "Phone" tone primary
+laptop -> hub "To 10.8.0.3"
+hub -> hub "Look up 10.8.0.3: the phone's tunnel"
+hub -> phone "Encrypted again for the phone"
+phone --> hub "Reply to 10.8.0.2"
+hub -> hub "Look up 10.8.0.2: the laptop's tunnel"
+hub --> laptop "Reply"
+```
 
 ## Mesh
 
-In a mesh VPN, every device keeps a tunnel to each peer it talks to. Tailscale works this way. The work splits into two parts. The control plane decides who may talk to whom and how to reach them. The data plane carries the packets.
+Every device has a tunnel to each peer it talks to. A coordination server tells the devices about each other, but carries none of their traffic. Tailscale works this way.
 
 <div class="diagram-block">
   <Diagram {...MESH_PRIMER} scrollLabel="Mesh diagram" />
 </div>
 
-A coordination server runs the control plane. Each device sends it a public key and the public addresses where it can be reached. The server gives every device a table of the peers it may talk to, with their keys and addresses. It carries none of the traffic itself. With that table, each device does for its own peers what the hub did for everyone: it looks up the peer for a private address and sends the packet straight there.
+Each device keeps its own table, for its own peers. Here is the laptop's, shown the way `tailscale status` lists it (an illustration, not real output):
 
-The hard part is reaching a device that sits behind a home router or an office firewall. These devices answer only traffic that looks like a reply to something they sent. A mesh gets around this by having both devices send to each other at about the same moment. Each router sees its own device send first, so it lets the other side's packets in. When that still fails, the two devices fall back to a relay, a server that passes their encrypted packets along without being able to read them.
+```text
+$ tailscale status
+100.101.0.2  laptop  me@  macOS  -
+100.101.0.3  phone   me@  iOS    active; direct 203.0.113.20:41641
+100.101.0.9  server  me@  linux  active; relay "fra"
+```
+
+Most devices sit behind a home router that drops packets nobody asked for. To get through, both devices send to each other at the same time:
+
+```steps
+sequence
+title "Getting through two home routers"
+participant laptop "Laptop" tone primary
+participant router_a "Laptop's router"
+participant router_b "Phone's router"
+participant phone "Phone" tone primary
+note laptop..phone "The coordination server gives each side the other's public address"
+laptop -> router_a "Send to the phone's public address"
+router_a -> router_b "Arrives unasked: dropped"
+phone -> router_b "Send to the laptop's public address"
+router_b -> router_a "Looks like a reply: let in"
+router_a -> laptop "Delivered"
+note laptop..phone "Both routers now pass the traffic: a direct path"
+step "The coordination server tells each device where the other one is." : 1
+step "The laptop sends first. Its router remembers that it sent to the phone." : 2
+step "The phone's router has not seen any traffic from the laptop yet, so it drops the packet." : 3
+step "The phone sends too. Its router now remembers the laptop." : 4
+step "The laptop's router sees what looks like a reply, and lets it in." : 5 6
+step "From now on both routers pass the traffic. If this fails, both devices use a relay instead." : 7
+```
 
 ## Side by side
 
 | | Hub and spoke | Mesh |
 | --- | --- | --- |
-| Path between two devices | Through the hub, both ways | Direct, or through a relay when blocked |
-| Who knows the full table | The hub | Every device, for its own peers |
-| What the central server carries | Every packet | No packets, only keys, addresses and policy |
-| If the central server stops | Nothing connects | Existing connections continue; changes wait |
-| Where traffic can be watched or filtered | At the hub | On each device |
+| Path from laptop to phone | Laptop, hub, phone | Laptop, phone (or a relay) |
+| Who holds the table | The hub | Each device, for its own peers |
+| What the central server carries | Every packet | No packets: keys, addresses, policy |
+| If the central server stops | Nothing connects | Existing connections continue |
 
-Both models use the same building block: an encrypted tunnel between two ends and a table that maps private addresses to tunnels. A hub-and-spoke VPN keeps one table in the middle, so the network is a star and every path crosses the center. A mesh gives each device its own table, so the network is a web and each pair of devices has its own path.
+The same tunnel and the same kind of table, in two shapes: one table in the middle of a star, or one table on every device of a web.
