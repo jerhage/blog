@@ -1,0 +1,149 @@
+---
+title: "The ch unit and fonts"
+description: Why the same 68ch is a different number of pixels in every font, with live measurements, the other font-relative units, and two ways to set a line length.
+published: 2026-10-10
+tags:
+  - css
+  - typography
+  - fonts
+---
+
+import ChWidthDemo from '../../demos/ChWidthDemo.svelte';
+import DigitVersusLetterDemo from '../../demos/DigitVersusLetterDemo.svelte';
+import FontRelativeUnitsDemo from '../../demos/FontRelativeUnitsDemo.svelte';
+import ProseColumnDemo from '../../demos/ProseColumnDemo.svelte';
+
+`ch` is a length unit that depends on the font. The same `68ch` is a different number of pixels in every typeface, and the demos here measure it in the fonts this blog already ships. The CSS and TypeScript examples are generic.
+
+## What 1ch is
+
+`1ch` is the advance width of the "0" glyph (U+0030) in the element's first available font, at the element's computed font size. The advance is the distance the pen moves after drawing the glyph, side bearings included. If the font has no "0" glyph, or its width cannot be read, `1ch` is `0.5em`.
+
+```css
+.column {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  font-size: 1rem;
+  max-width: 68ch;
+}
+```
+
+`px` is the opposite: it names a length and reads nothing from a font.
+
+| Length | Reads | At 16px in DM Sans |
+| --- | --- | --- |
+| `68px` | nothing | 68px |
+| `68em` | the font size | 1088px |
+| `68ch` | the font size and the font's "0" | 744px |
+
+## The same 68ch, different widths
+
+Eight typefaces, each with a `max-width: 68ch` box at a font size of 16px. The "0" advance is the measured width of `1ch`.
+
+| Font | "0" advance | 68ch |
+| --- | --- | --- |
+| system-ui | 10px | 685px |
+| DM Sans | 11px | 744px |
+| Geist | 11px | 721px |
+| Figtree | 10px | 697px |
+| M PLUS Rounded 1c | 10px | 675px |
+| Archivo | 9px | 623px |
+| Literata | 9px | 630px |
+| Zen Kaku Gothic New | 8px | 548px |
+
+The widest box is about 36% wider than the narrowest, from one CSS value. The demo draws the same `ch` box in each font and reads its width back through a resize observer. The boxes are real, so a wide one scrolls sideways inside its row.
+
+<ChWidthDemo client:visible />
+
+The page loads the fonts with `document.fonts.load`, and the readout appears when each box has a width. The measured advance has decimals: the table above rounds it to whole pixels.
+
+## A digit is not a letter
+
+`ch` counts the width of a zero, so a line of zeros fills a `30ch` box exactly. Letters are narrower or wider than a zero, and the count of letters in the same box differs from the `ch` value and from font to font.
+
+| Box | Content | Characters per line |
+| --- | --- | --- |
+| `30ch` | `0` repeated | 30 in every font |
+| `30ch` | an English sentence | 40 in system-ui, 38 in Archivo, 35 in Literata, 33 in Zen Kaku Gothic New |
+
+<DigitVersusLetterDemo client:visible />
+
+The `ch` value is a count of zeros. Letters such as "i" and "m" are narrower and wider than a zero, so it is only a rough guide to a count of characters.
+
+## ch uses the first available font
+
+The font that sets `1ch` is the first font in the element's `font-family` list that is available. While a web font is still loading, that is the fallback, and the width changes when the web font arrives.
+
+```css
+.column {
+  font-family: 'Zen Kaku Gothic New', system-ui, sans-serif;
+  max-width: 68ch;
+}
+```
+
+| Moment | First available font | 1ch | 68ch |
+| --- | --- | --- | --- |
+| Before the web font loads | system-ui | 10px | 685px |
+| After it loads | Zen Kaku Gothic New | 8px | 548px |
+
+With `font-display: swap`, which Kandan's `@font-face` rules use, the page shows the fallback first and swaps afterwards, so the column narrows and its text reflows. The boxes in the first demo update by themselves when a font arrives, because a resize observer reports the new width.
+
+`ch` is also resolved on the element that carries it. A child in another font does not change its parent's `ch`.
+
+```css
+.note {
+  font-family: system-ui, sans-serif;
+  max-width: 40ch;
+}
+
+.note code {
+  font-family: ui-monospace, monospace;
+}
+```
+
+The `.note` box is 40 system-ui zeros wide. The `code` inside has no say in it.
+
+## The other font-relative units
+
+| Unit | Is | Depends on |
+| --- | --- | --- |
+| `em` | the element's computed font size | the element's font size |
+| `rem` | the root element's computed font size | the root element's font size |
+| `ex` | the x-height of the first available font | the font |
+| `cap` | the cap height of the first available font | the font |
+| `ch` | the advance of "0" in the first available font | the font |
+| `ic` | the advance of <span lang="ja">水</span> (U+6C34), the width of a full-width CJK character | the font |
+| `lh` | the computed `line-height` of the element | the line height |
+
+Of the seven only `ex`, `cap`, `ch` and `ic` read glyphs from the font. `em` follows the font size and `lh` the line height. `rem` follows neither the element's font nor its size.
+
+The demo gives `20em`, `20rem`, `20ch` and `20ic` as boxes in the font and font size you pick. Switch to a font with a different "0", then change the size: only `rem` ignores both. At 16px `20ic` and `20em` both measure 320px in all eight fonts. The two units differ only in a font whose full-width CJK glyphs are narrower or wider than one em.
+
+<FontRelativeUnitsDemo client:visible />
+
+## Setting a line length
+
+A line length is often given in characters, and `ch` is the unit that comes closest to counting them. Two ways to set it, and what each one holds constant.
+
+**A `ch` value per font.** The value is the number of zeros, so the line length is the value times the font's "0". To keep the same pixel width, each font needs its own value. Kandan does this: each theme sets `--ds-container-prose`, which is `68ch` in seven themes and `85ch` in Yorha, because Zen Kaku Gothic New's narrow "0" made `68ch` a 548px column.
+
+```css
+:root[data-theme='yorha'] {
+  --ds-container-prose: 85ch;
+}
+```
+
+**A `rem` value.** `43rem` is 688px at the default root size in every font, and the number of characters on a line depends on the font.
+
+| | `ch` per font | `rem` |
+| --- | --- | --- |
+| Holds constant | the count of zeros, roughly the count of letters | the width in pixels |
+| Changes with the font | the width in pixels | the number of characters |
+| Needs a value per font | yes, to keep the width | no |
+
+The demo sets each font's column both ways, using Kandan's value per font for `ch` and `43rem` for `rem`. The characters count is how many characters of one English sentence fit on one line.
+
+<ProseColumnDemo client:visible />
+
+## In short
+
+`1ch` is the width of a zero in the element's first available font, so `68ch` is a different number of pixels in each typeface, from 548px to 744px across the eight fonts here. A digit is wider or narrower than a letter, so `ch` is a rough count of characters, and it changes when a fallback font is replaced by the web font. `rem` and `px` give a width that no font changes, and a `ch` value per font gives a similar width back with one number per font. For more on how Kandan sets up its themes and tokens, see [How the Kandan design system fits together](/posts/the-kandan-design-system/).
