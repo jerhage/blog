@@ -60,7 +60,7 @@ row "Encrypted inner IP packet" 32 detail "Variable length, padded to a multiple
 row "Authentication tag" 32 detail "16 bytes" tone success
 ```
 
-The rows are not to scale: the outer header, the encrypted packet and the tag each take several 32-bit words and are drawn as one row. The tag is the 16-byte Poly1305 authentication tag that follows the encrypted packet. The packet is zero-padded to a multiple of 16 bytes before it is encrypted. The receiver index is the number the receiving peer picked for itself during the handshake.
+The rows are not to scale: the outer header, the encrypted packet and the tag each take several 32-bit words and are drawn as one row. The tag is the 16-byte Poly1305 authentication tag that follows the encrypted packet. The packet is zero-padded to a multiple of 16 bytes before it is encrypted.
 
 ### What the hub does with it
 
@@ -154,7 +154,7 @@ Each device learns its own public endpoint with STUN: it asks a server on the in
 
 Some NATs choose a different public port for every destination, which Tailscale calls hard NAT. A direct path through such a NAT often fails, and the traffic stays on a relay. That relay is a DERP server, or a peer relay, which is another device in the same tailnet set up to forward traffic. DERP servers are reached over HTTPS. They forward the WireGuard packets without being able to read them, since the keys belong to the two devices.
 
-The first message of the WireGuard handshake, sent by the initiator, is 148 bytes.
+Whether the path is direct or relayed, the two devices set up the tunnel with the same WireGuard handshake as a hub and its client. The first message of that handshake, sent by the initiator, is 148 bytes.
 
 ```packet
 title "A WireGuard handshake initiation message"
@@ -198,8 +198,6 @@ pong from office-nas (100.101.0.9) via 203.0.113.7:41641 in 12ms
 | Failure of the central part | Nothing works | New devices and changes wait; existing paths keep working until keys expire |
 | Traffic inspection and one exit point | Simple, one place | Needs policy on each device or a designated exit device |
 | Adding a device | Edit the hub | Register the device with the coordination server |
-
-Neither layout is better for every case. A hub is the simpler fit when all traffic must pass one inspection point or leave through one address. A mesh fits when devices mostly talk to each other and the hub would only add distance.
 
 ## Which one to use
 
