@@ -105,7 +105,7 @@ function useCardFilter() {
 
 The data component takes the hook's `query` as an input to its read, and never owns the filter. Otherwise the text field would have to reach up into whatever runs the search.
 
-A rule that combines data and state is a pure function: `visibleCards(cards, filter)` takes both and returns a list. Classes stay for what a hook cannot be: session memory, a write in progress, a browser resource that must be released, shared plumbing.
+A rule that combines data and state is a pure function: `visibleCards(cards, filter)` takes both and returns a list.
 
 ## Pure components
 
