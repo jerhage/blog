@@ -41,5 +41,5 @@ export default defineConfig({
 		shikiConfig: { theme: 'css-variables' },
 	},
 	integrations: [mdx(), sitemap(), svelte(), diagramBuildGuard()],
-	vite: { plugins: [fontLicensesPublished()], optimizeDeps: { include: ['ts-pattern'] } },
+	vite: { cacheDir: 'node_modules/.vite-astro', plugins: [fontLicensesPublished()], optimizeDeps: { include: ['ts-pattern'] } },
 });
