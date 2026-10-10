@@ -1,0 +1,319 @@
+---
+title: "How the Kandan design system fits together"
+description: The layered CSS core of Kandan, the design system this blog is built on, and how a Svelte library is built over it.
+published: 2026-10-10
+tags:
+  - design-systems
+  - css
+  - svelte
+---
+
+Kandan is my own design system, and this blog is built on it. It has a framework-free CSS core and a framework library on top. The framework library is Svelte, and the code examples use Svelte and CSS.
+
+## The core is plain CSS
+
+The core holds stylesheets, fonts, icons, two small scripts and a markup contract. It runs no component.
+
+```diagram
+title "What the core holds"
+direction right
+core "Kandan core" detail "no framework" tone primary
+styles "styles/" detail "layers, tokens, themes, components, utilities" tone accent
+scripts "appearance.js, theme-boot.js" detail "theme and colour scheme" tone accent
+contract "fixtures/, rules/, contract/" detail "markup and behaviour contract" tone accent
+core -> styles
+core -> scripts
+core -> contract
+```
+
+One entry file, `styles/index.css`, orders the layers and imports every file into the layer its folder names.
+
+## Cascade layers fix who wins
+
+A later layer beats an earlier one before selector specificity is compared. So the order is the whole precedence story.
+
+```css
+@layer open-props, reset, base, tokens, components, features, utilities, overrides;
+```
+
+```diagram
+title "The layer stack, lowest to highest precedence"
+direction down
+openprops "open-props" detail "named first; the core imports nothing into it" tone neutral
+reset "reset" detail "element selectors that remove browser defaults" tone neutral
+base "base" detail "palettes, role primitives, themes, fonts, element defaults" tone primary
+tokens "tokens" detail "semantic names components read" tone primary
+components "components" detail "one stylesheet per component" tone accent
+features "features" detail "the app's own last-resort styles" tone warning
+utilities "utilities" detail "single-purpose classes" tone success
+overrides "overrides" detail "deliberate exceptions" tone danger
+openprops -> reset
+reset -> base
+base -> tokens
+tokens -> components
+components -> features
+features -> utilities
+utilities -> overrides
+```
+
+| Layer | Example it holds |
+| --- | --- |
+| `base` | `--ds-primary`, `--ds-bg`, `:root[data-theme='ember']` |
+| `tokens` | `--color-primary`, `--sp-4`, `--radius-pill` |
+| `components` | `.btn`, `.badge`, `.progress-track` |
+| `utilities` | `.gap-2`, `.visually-hidden` |
+| `overrides` | `[hidden]:not([hidden='until-found'])` |
+
+A utility beats a component rule however specific the component's selector is. The order is also declared inline in the page's head before any stylesheet loads, because a browser fixes the order of layers the first time it meets each name.
+
+## A value passes through three tiers
+
+A component never reads a colour literal or a `--ds-*` name. It reads a semantic token, and the token points at a primitive.
+
+```diagram
+title "The token pipeline"
+direction down
+raw "Raw value" detail "oklch(0.52 0.1 195)" tone neutral
+palette "Palette primitive" detail "--ds-spruce-500, in base" tone primary
+role "Role primitive" detail "--ds-primary, assigned by the theme, in base" tone primary
+semantic "Semantic token" detail "--color-primary, in tokens" tone accent
+component "Component class" detail ".btn-primary" tone success
+raw -> palette
+palette -> role
+role -> semantic
+semantic -> component
+```
+
+```css
+:root {
+  --ds-spruce-500: light-dark(oklch(0.52 0.1 195), oklch(0.74 0.11 195));
+}
+
+:root,
+:root[data-theme='base'] {
+  --ds-primary: var(--ds-spruce-500);
+}
+
+:root {
+  --color-primary: var(--ds-primary);
+}
+
+.btn-primary {
+  --_btn-tone-bg: var(--color-primary);
+}
+```
+
+The `--_btn-tone-bg` name is a private property of the button. A variant class sets the private properties and the `.btn` base class reads them.
+
+| Tier | Prefix | Lives in | Read by components |
+| --- | --- | --- | --- |
+| Primitive | `--ds-` | `base` | no |
+| Semantic token | `--color-`, `--sp-`, `--radius-`, `--text-` | `tokens` | yes |
+| Private property | `--_name-` | the component's own rule | itself |
+
+The core's own tests check that a `--ds-` name appears only in `base` and `tokens`, and that components style with semantic tokens only.
+
+## A theme or a colour scheme reassigns primitives
+
+The core ships several themes, such as `base`, `ember` and `moss`. A theme file reassigns the role primitives under its own attribute selector. Nothing downstream changes.
+
+```css
+:root[data-theme='ember'] {
+  --ds-primary: var(--ds-copper-500);
+  --ds-bg-raised: var(--ds-sand-50);
+}
+```
+
+```steps
+diagram
+title "Switching to the ember theme"
+direction down
+attr "html data-theme" detail "ember" tone warning
+role "Role primitives" detail "--ds-primary" tone primary
+semantic "Semantic tokens" detail "--color-primary" tone accent
+component "Components" detail ".btn-primary" tone success
+attr -> role
+role -> semantic
+semantic -> component
+step "The attribute on the html element changes." : attr
+step "The ember rule now assigns the role primitives." : attr role attr->role
+step "The semantic tokens follow without being touched." : role semantic role->semantic
+step "Every component repaints." : semantic component semantic->component
+```
+
+Light and dark work differently. A palette value is written once with `light-dark()`, and `color-scheme` on the root chooses the side.
+
+```css
+:root {
+  color-scheme: light dark;
+}
+:root[data-color-scheme='dark'] {
+  color-scheme: dark;
+}
+```
+
+| `data-color-scheme` | `color-scheme` | Result |
+| --- | --- | --- |
+| absent | `light dark` | follows the system |
+| `light` | `light` | pinned light |
+| `dark` | `dark` | pinned dark |
+
+## Two attributes and a boot script carry the appearance
+
+The stylesheets read `data-theme` and `data-color-scheme` on `html`, and nothing else. `appearance.js` holds the vocabulary. The app saves the choice under its own keys. `theme-boot.js` builds an inline script for the head that applies the saved choice before the first paint.
+
+```diagram
+title "From a saved choice to the first paint"
+direction down
+storage "localStorage" detail "the app's own keys" tone neutral
+boot "Boot script" detail "inline in the head, built by themeBootScript" tone warning
+attrs "Attributes on html" detail "data-theme, data-color-scheme" tone primary
+paint "First paint" detail "already in the saved theme" tone success
+storage -> boot "read"
+boot -> attrs "sets"
+attrs -> paint
+```
+
+```js
+themeBootScript({ themeKey: 'app.theme', schemeKey: 'app.color-scheme' });
+```
+
+## Class names say what, which part and which variant
+
+Every class is named for what it does, never for an app.
+
+| Kind | Pattern | Example |
+| --- | --- | --- |
+| Component | `.block` | `.card` |
+| Part | `.block-part` | `.card-title` |
+| Modifier | `.block-modifier` | `.btn-primary`, `.btn-sm` |
+| State | `.is-state` | `.btn.is-active` |
+| Utility | one job | `.gap-2` |
+
+```html
+<button class="btn btn-primary btn-sm is-active" type="button">Save</button>
+```
+
+Sizes are `-sm` and `-lg`, and the default has no class. Tone and emphasis are separate axes: `btn-primary` is a tone, `btn-outline` an emphasis, and they combine.
+
+## The stable API is token names and class names
+
+Values may change from theme to theme. The names of the tokens and the markup of each component variant are the contract. The core ships that contract as a file per variant.
+
+```html
+<span class="badge badge-success">Read</span>
+```
+
+That is `fixtures/badge/success.html`. A framework library renders the same variant and compares the markup. Behaviour that CSS cannot hold is described as data in `rules/`.
+
+## `@scope` is for an app's feature styles
+
+The core itself holds no `@scope`. The rule is for the last resort: a style that one feature needs and the system cannot express. It sits in the `features` layer and cannot leak, because `@scope` limits it to the feature's root.
+
+```css
+@layer features {
+  @scope (.item-card) {
+    .cover {
+      aspect-ratio: 2 / 3;
+      border-radius: var(--radius-container);
+    }
+  }
+}
+```
+
+The order of preference is to compose existing components and utilities, then add a generic variant to the core, then write feature CSS. Feature CSS reads semantic tokens only.
+
+## A framework library applies the core's classes
+
+`kandan-ui-svelte` vendors the core at `core/`, imports `core/styles/index.css` once, and adds components. A component writes no style of its own.
+
+```diagram
+title "Core, framework library and app"
+direction down
+core "kandan-ui" detail "CSS, icons, scripts, contract" tone primary
+library "kandan-ui-svelte" detail "components that apply the core's classes" tone accent
+app "App" detail "composes the components" tone success
+core -> library "vendored at core/"
+library -> app "vendored as a folder"
+```
+
+| Rule | In practice |
+| --- | --- |
+| The core is not edited in the library | a fix is made in the core, tagged and pulled |
+| No `<style>` block in a component | all styling is a core class |
+| Props follow the class conventions | `variant`, `size` and booleans map to classes |
+| Behaviour lives in the framework | focus, keys, placement, timing |
+| Presentation lives in CSS | colours, spacing, motion |
+
+A prop that picks a class maps to it through a small table.
+
+```ts
+const BUTTON_VARIANTS: Readonly<Record<ButtonVariant, readonly string[]>> = {
+  default: [],
+  primary: ['btn-primary'],
+  outline: ['btn-outline', 'btn-primary'],
+  ghost: ['btn-ghost'],
+};
+```
+
+## A runtime value passes as a custom property
+
+A fill width exists only at runtime, so the component passes it with `style:--name` and the class reads it. This is a trimmed copy of the progress bar.
+
+```svelte
+<script lang="ts">
+  let { label, value, max = 100, variant = 'primary', class: className } = $props();
+
+  const percent = $derived(value === undefined ? undefined : progressPercent(value, max));
+</script>
+
+<div
+  role="progressbar"
+  aria-label={label}
+  aria-valuenow={value}
+  style:--progress={percent === undefined ? undefined : `${percent}%`}
+  class={['progress-track', PROGRESS_VARIANTS[variant], className]}
+>
+  <div class="progress-fill"></div>
+</div>
+```
+
+It renders plain HTML that the core's stylesheet already knows how to draw.
+
+```html
+<div aria-label="Upload" aria-valuenow="40" class="progress-accent progress-track"
+  role="progressbar" style="--progress: 40%;">
+  <div class="progress-fill"></div>
+</div>
+```
+
+```css
+.progress-fill {
+  inline-size: var(--progress, 0%);
+  background-color: var(--_progress-fill);
+}
+```
+
+The class declares a fallback for the property it reads. Runtime values are data, and design values stay in the stylesheets.
+
+## Another framework implements the same contract
+
+The markup fixtures and the behaviour rules belong to the core, not to Svelte. A library for another framework would render the same fixtures over the same CSS, which is how the core's README describes a framework version.
+
+```diagram
+title "One contract, framework versions"
+direction right
+core "Core" detail "styles, fixtures, rules" tone primary
+svelte "Svelte library" detail "renders the fixtures" tone accent
+other "Another framework version" detail "would render the same fixtures" tone neutral
+core -> svelte
+core -> other
+```
+
+## Pure components compose these base components
+
+The components above are the base layer. In the architecture from [How I structure a frontend](/posts/frontend-architecture-at-a-glance/), the pure components of [Data components, hooks and pure components](/posts/data-components-hooks-and-pure-components/) compose them: a card grid is built from a card, a badge and a button, and gets its data through props.
+
+## In short
+
+The core fixes who wins with layers, what a value is called with tiers, and what the markup is with fixtures. A framework library maps props to the core's classes and adds the behaviour CSS cannot hold. Presentation stays in the CSS, and behaviour stays in the framework.
