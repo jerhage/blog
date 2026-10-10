@@ -1,0 +1,29 @@
+@layer features {
+	@scope (.ch-unit) {
+		.ch-unit-scroll {
+			max-width: 100%;
+			overflow-x: auto;
+		}
+		.ch-box {
+			font-size: 1rem;
+			background-color: var(--color-primary-soft);
+			border-radius: var(--radius-sm);
+			box-sizing: content-box;
+		}
+		.ch-box-bar {
+			height: var(--sp-6);
+		}
+		.ch-box-line {
+			display: block;
+			white-space: nowrap;
+			overflow: hidden;
+			line-height: var(--lh-relaxed);
+		}
+		.ch-box-line + .ch-box-line {
+			border-top: var(--ds-border-1) solid var(--color-surface);
+		}
+		.ch-box-accent {
+			background-color: var(--color-accent-surface);
+		}
+	}
+}
