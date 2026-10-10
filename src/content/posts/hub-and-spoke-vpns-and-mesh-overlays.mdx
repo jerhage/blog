@@ -199,10 +199,4 @@ pong from office-nas (100.101.0.9) via 203.0.113.7:41641 in 12ms
 | Traffic inspection and one exit point | Simple, one place | Needs policy on each device or a designated exit device |
 | Adding a device | Edit the hub | Register the device with the coordination server |
 
-## Which one to use
-
-Pick a hub when the network is small and mostly reaches one place: a branch office, a server room, a home lab. All traffic then passes one machine, so you can inspect it there or send it out through one address. You accept that the hub's link limits everyone and that its failure stops everyone.
-
-Pick a mesh when devices mostly talk to each other, when they roam between networks, or when the list of devices changes often. Each pair of devices uses its own direct path where NAT allows it and a relay where it does not. The coordination server only needs to be up when something changes.
-
 The two are not exclusive. A mesh device can act as an exit node or a subnet router, and then it plays the hub's part for the traffic that needs one.
