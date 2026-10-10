@@ -10,20 +10,30 @@ tags:
 
 Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React with TanStack Query and ts-pattern.
 
-## Sort every failure first
+## One question sorts every failure
 
-TypeScript does not put a throw in a signature, so `getCard(): Card` may really mean "a card, or anything thrown". Before writing any handling, each failure goes in one of two kinds.
+The test is one question: can the caller do something meaningful with this? If yes, it's expected. If no, it's unexpected.
+
+```diagram
+title "The one question"
+direction down
+failure "A failure" tone warning
+question "Can the caller do something meaningful with this?" tone primary
+expected "Expected" detail "a variant of the return type" tone success
+unexpected "Unexpected" detail "thrown to a boundary" tone danger
+failure -> question
+question -> expected "yes"
+question -> unexpected "no"
+```
+
+What I want is for a thrown exception to keep its meaning of "something I didn't plan for". TypeScript does not put a throw in a signature, so `getCard(): Card` may really mean "a card, or anything thrown". Answering the question first keeps a throw rare and a variant honest.
 
 | Expected | Unexpected |
 | --- | --- |
-| The caller can do something about it | Nobody can recover in normal code |
 | Card not found | A card row with no image |
 | Storage blocked in a private window | A malformed response, a network error |
 | Deck too large | A broken store, a bug |
 | Unauthorized | A status code nobody listed |
-| A variant of the return type | Thrown to a boundary |
-
-One question sorts them: can the caller do something meaningful with it? A thrown error then keeps one meaning, "something nobody planned for".
 
 ## Two routes up the layers
 
@@ -153,4 +163,4 @@ Unexpected failures need no such list: they all end at the same boundary, and on
 
 ## The difference in short
 
-Expected failures are part of the contract, so they are typed and each screen explains them. Unexpected failures are outside it, so they throw to one place that logs them and shows a failure.
+Expected failures are the ones a caller can do something meaningful with, so they are typed and each screen explains them. Unexpected failures are the rest, so they throw to one place that logs them and shows a failure. A throw always means "something I didn't plan for".
