@@ -1,0 +1,53 @@
+---
+title: "Hub-and-spoke and mesh VPNs"
+description: Two ways to join devices into one private network, and how they differ.
+published: 2026-10-09
+tags:
+  - vpn
+  - networking
+  - tailscale
+---
+
+import Diagram from '../../kandan/components/Diagram.svelte';
+import { MESH_PRIMER } from '../../diagrams/mesh-primer';
+
+A VPN makes devices on different networks behave as if they shared one private network. Each device sends its traffic through an encrypted tunnel, so the networks in between see only scrambled packets. The open question is where those tunnels go.
+
+## Hub and spoke
+
+In a hub-and-spoke VPN, every device opens one tunnel to a central server, the hub. To reach anything on the private network, a device sends its traffic to the hub, and the hub passes it on.
+
+```diagram
+title "Hub and spoke: every tunnel ends at the hub"
+direction right
+laptop "Laptop" tone primary
+phone "Phone" tone primary
+hub "Hub" tone warning
+server "Server" tone primary
+laptop <-> hub
+phone <-> hub
+hub <-> server
+```
+
+The hub knows which tunnel leads to which device, so it can send each reply back the way the request came. Everything meets in one place, which makes the setup easy to picture: one machine to configure, one place to watch the traffic, one exit to the internet. It also means every packet makes the trip through the hub, even between two devices in the same room, and the hub has to stay up for anyone to connect.
+
+## Mesh
+
+In a mesh VPN, devices open tunnels to each other. Tailscale works this way. A coordination server tells each device who its peers are and how to reach them, but it does not carry their traffic. Once two devices know about each other, they connect directly.
+
+<div class="diagram-block">
+  <Diagram {...MESH_PRIMER} scrollLabel="Mesh diagram" />
+</div>
+
+Home routers and office firewalls often block a direct connection. A mesh works around that by having both devices reach out to each other at the same moment. When that fails, the traffic goes through a relay, which passes the encrypted packets along without being able to read them.
+
+## Side by side
+
+| | Hub and spoke | Mesh |
+| --- | --- | --- |
+| Where traffic goes | Always through the hub | Straight to the other device, or a relay when blocked |
+| What the central server does | Carries every packet | Introduces devices; carries none of their traffic |
+| If the central server stops | Nothing connects | Existing connections continue; changes wait |
+| Where traffic can be watched | One place, the hub | On each device |
+
+Both models build the same kind of encrypted tunnel. The difference is the shape of the network: a hub-and-spoke VPN is a star with every path through the middle, and a mesh is a web where each pair of devices has its own path.
