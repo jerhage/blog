@@ -4,9 +4,35 @@ import { defineMdastPlugin } from 'satteri';
 import { recordDiagramFailure } from './build-guard';
 import { layoutDiagram } from './layout';
 import { parseDiagram } from './parse';
-import { renderDiagram } from './render';
+import { renderDiagram, renderSequence } from './render';
+import { parseSequence } from './sequence-parse';
+import type { SourceError } from './tokens';
 
-const DIAGRAM_LANGUAGE = 'diagram';
+type BlockOutcome =
+	| { readonly kind: 'html'; readonly html: string }
+	| { readonly kind: 'failure'; readonly errors: readonly SourceError[] };
+
+type BlockRenderer = (text: string, idPrefix: string) => Promise<BlockOutcome>;
+
+async function diagramHtml(text: string, idPrefix: string): Promise<BlockOutcome> {
+	const parsed = parseDiagram(text);
+	if (parsed.kind === 'failure') return parsed;
+	const layout = await layoutDiagram(parsed.source);
+	const html = await renderDiagram(layout, idPrefix);
+	return { kind: 'html', html };
+}
+
+async function sequenceHtml(text: string, idPrefix: string): Promise<BlockOutcome> {
+	const parsed = parseSequence(text);
+	if (parsed.kind === 'failure') return parsed;
+	const html = await renderSequence(parsed.source, idPrefix);
+	return { kind: 'html', html };
+}
+
+const BLOCK_RENDERERS: Readonly<Record<string, BlockRenderer | undefined>> = {
+	diagram: diagramHtml,
+	sequence: sequenceHtml,
+};
 
 function bodyLineOffset(file: string | undefined, body: string): number {
 	if (file === undefined || !existsSync(file)) return 0;
@@ -17,31 +43,29 @@ function bodyLineOffset(file: string | undefined, body: string): number {
 
 function diagramBlocks() {
 	return (factory: { readonly source: string; readonly fileURL: URL | undefined }) => {
-		if (!factory.source.includes(DIAGRAM_LANGUAGE)) return null;
+		if (!Object.keys(BLOCK_RENDERERS).some((language) => factory.source.includes(language))) return null;
 		const path = factory.fileURL === undefined ? undefined : fileURLToPath(factory.fileURL);
-		const file = path ?? 'a diagram block';
+		const file = path ?? 'a block';
 		const frontMatterLines = bodyLineOffset(path, factory.source);
 		let rendered = 0;
 		return defineMdastPlugin({
 			name: 'diagram-blocks',
 			options: { position: true },
 			async code(node, ctx) {
-				if (node.lang !== DIAGRAM_LANGUAGE) return;
-				const parsed = parseDiagram(node.value);
-				if (parsed.kind === 'failure') {
+				const renderer = node.lang === undefined || node.lang === null ? undefined : BLOCK_RENDERERS[node.lang];
+				if (renderer === undefined) return;
+				rendered += 1;
+				const outcome = await renderer(node.value, `${node.lang}-${rendered}`);
+				if (outcome.kind === 'failure') {
 					const firstLine = frontMatterLines + (node.position?.start.line ?? 0);
-					const lines = parsed.errors.map(
-						(error) => `${file}:${firstLine + error.line}: diagram: ${error.message}`,
-					);
-					const message = lines.join('\n');
+					const message = outcome.errors
+						.map((error) => `${file}:${firstLine + error.line}: ${node.lang}: ${error.message}`)
+						.join('\n');
 					recordDiagramFailure(message);
 					throw new Error(message);
 				}
-				const layout = await layoutDiagram(parsed.source);
-				rendered += 1;
-				const html = await renderDiagram(layout, `diagram-${rendered}`);
 				ctx.replaceNode(node, {
-					raw: `<div class="diagram-block">${html}</div>`,
+					raw: `<div class="${node.lang}-block">${outcome.html}</div>`,
 					mdxExpressions: false,
 				});
 			},

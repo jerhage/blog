@@ -26,6 +26,25 @@ describe('diagramBlocks', () => {
 		expect(html).toContain('<p>after</p>');
 	});
 
+	it('replaces a sequence block with its labelled HTML and no script', async () => {
+		const html = await render(
+			'```sequence\ntitle "Handshake"\nparticipant a "Alpha"\nparticipant b "Beta"\na -> b "Hello"\n```',
+		);
+		expect(html).toMatch(/<div class="sequence-block"><div class="sequence"[^>]*aria-label="Handshake"/u);
+		expect(html).toContain('Hello');
+		expect(html).not.toContain('<script');
+	});
+
+	it('fails the build with the file line of a sequence error', async () => {
+		const body = 'text\n\n```sequence\ntitle "t"\nparticipant a "A"\na -> z "x"\n```\n';
+		const path = join(mkdtempSync(join(tmpdir(), 'sequence-')), 'post.md');
+		writeFileSync(path, `---\ntitle: x\n---\n\n${body}`);
+		await expect(
+			markdownToHtml(body, { fileURL: pathToFileURL(path), mdastPlugins: [diagramBlocks()] }),
+		).rejects.toThrow(`${path}:10: sequence: The participant "z" is not declared.`);
+		takeDiagramFailures();
+	});
+
 	it('leaves other code blocks untouched', async () => {
 		const html = await render('```bash\nip a\n```');
 		expect(html).toContain('<pre><code class="language-bash">ip a');

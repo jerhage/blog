@@ -14,7 +14,7 @@ function diagramBuildGuard() {
 		hooks: {
 			'astro:build:done': () => {
 				const found = takeDiagramFailures();
-				if (found.length > 0) throw new Error(`${found.length} diagram block(s) failed:\n${found.join('\n')}`);
+				if (found.length > 0) throw new Error(`${found.length} block(s) failed:\n${found.join('\n')}`);
 			},
 		},
 	};

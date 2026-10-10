@@ -4,35 +4,23 @@ import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import { createServer } from 'vite';
 import type { ViteDevServer } from 'vite';
-import type { DiagramEdge, DiagramNode } from '../../kandan/components/diagram';
 import type { DiagramLayout } from './layout';
+import type { SequenceSource } from './sequence-parse';
 
-type DiagramProps = {
-	label: string;
-	width: number;
-	height: number;
-	nodes: readonly DiagramNode[];
-	edges: readonly DiagramEdge[];
-	scrollLabel: string;
-};
-
-type Loaded = {
-	readonly server: ViteDevServer;
-	readonly diagram: Component<DiagramProps>;
-};
-
-const DIAGRAM_COMPONENT = fileURLToPath(
-	new URL('../../kandan/components/Diagram.svelte', import.meta.url),
-);
+const COMPONENT_FILES = {
+	diagram: 'Diagram.svelte',
+	sequence: 'SequenceDiagram.svelte',
+	packet: 'PacketLayout.svelte',
+} as const;
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 const HYDRATION_COMMENT = /<!--.*?-->/gu;
 
-let loading: Promise<Loaded> | undefined;
+let loading: Promise<ViteDevServer> | undefined;
 
-async function load(): Promise<Loaded> {
-	const server = await createServer({
+function startServer(): Promise<ViteDevServer> {
+	return createServer({
 		configFile: false,
 		mode: 'production',
 		root: PROJECT_ROOT,
@@ -43,26 +31,36 @@ async function load(): Promise<Loaded> {
 		ssr: { optimizeDeps: { noDiscovery: true, include: [] } },
 		plugins: [svelte({ compilerOptions: { dev: false } })],
 	});
-	const loaded = await server.ssrLoadModule(DIAGRAM_COMPONENT);
-	return { server, diagram: loaded.default };
 }
 
-function diagramComponent(): Promise<Loaded> {
-	loading ??= load();
-	return loading;
-}
-
-async function renderDiagram(layout: DiagramLayout, idPrefix: string): Promise<string> {
-	const { diagram } = await diagramComponent();
-	const { body } = render(diagram, { props: { ...layout, scrollLabel: layout.label }, idPrefix });
+async function renderComponent<Props extends Record<string, unknown>>(
+	name: keyof typeof COMPONENT_FILES,
+	props: Props,
+	idPrefix: string,
+): Promise<string> {
+	loading ??= startServer();
+	const server = await loading;
+	const file = fileURLToPath(new URL(`../../kandan/components/${COMPONENT_FILES[name]}`, import.meta.url));
+	const loaded = await server.ssrLoadModule(file);
+	const component: Component<Props> = loaded.default;
+	const { body } = render(component, { props, idPrefix });
 	return body.replace(HYDRATION_COMMENT, '').replace(/\s*\n\s*/gu, ' ').trim();
+}
+
+function renderDiagram(layout: DiagramLayout, idPrefix: string): Promise<string> {
+	return renderComponent('diagram', { ...layout, scrollLabel: layout.label }, idPrefix);
+}
+
+function renderSequence(source: SequenceSource, idPrefix: string): Promise<string> {
+	const { title, participants, steps } = source;
+	return renderComponent('sequence', { label: title, participants, steps }, idPrefix);
 }
 
 async function closeDiagramRenderer(): Promise<void> {
 	if (loading === undefined) return;
-	const { server } = await loading;
+	const server = await loading;
 	loading = undefined;
 	await server.close();
 }
 
-export { closeDiagramRenderer, renderDiagram };
+export { closeDiagramRenderer, renderDiagram, renderSequence };
