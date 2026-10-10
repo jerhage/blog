@@ -25,9 +25,9 @@ const GROUP_PADDING = 20;
 
 const CANVAS_MARGIN = 10;
 
-const NODE_GAP = 24;
+const NODE_GAP = 16;
 
-const LAYER_GAP = 48;
+const LAYER_GAP = 40;
 
 function fontSizePx(typeScale: string, name: string): number {
 	const found = new RegExp(`--ds-fz-${name}:\\s*([0-9.]+)rem`, 'u').exec(typeScale);

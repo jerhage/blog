@@ -38,15 +38,47 @@ const ELK_DIRECTIONS = { right: 'RIGHT', down: 'DOWN' } as const;
 
 const elk = new ELK();
 
-function elkBox(box: SourceBox): ElkNode {
-	return { id: box.id, ...boxSize(box.label, box.detail) };
+function depthOf(source: DiagramSource): Map<string, number> {
+	const depth = new Map<string, number>();
+	const ids = source.members.flatMap((member) =>
+		member.kind === 'group' ? member.boxes.map((box) => box.id) : [member.id],
+	);
+	for (const id of ids) depth.set(id, 0);
+	for (let pass = 0; pass < ids.length; pass += 1) {
+		let changed = false;
+		for (const edge of source.edges) {
+			const next = (depth.get(edge.from) ?? 0) + 1;
+			if (next > (depth.get(edge.to) ?? 0) && next < ids.length) {
+				depth.set(edge.to, next);
+				changed = true;
+			}
+		}
+		if (!changed) break;
+	}
+	return depth;
 }
 
-function elkGroup(group: SourceGroup): ElkNode {
+function layerWidths(source: DiagramSource): Map<string, number> {
+	const depth = depthOf(source);
+	const boxes = source.members.flatMap((member) => (member.kind === 'group' ? member.boxes : [member]));
+	const widest = new Map<number, number>();
+	for (const box of boxes) {
+		const layer = depth.get(box.id) ?? 0;
+		widest.set(layer, Math.max(widest.get(layer) ?? 0, boxSize(box.label, box.detail).width));
+	}
+	return new Map(boxes.map((box) => [box.id, widest.get(depth.get(box.id) ?? 0) ?? 0]));
+}
+
+function elkBox(box: SourceBox, widths: ReadonlyMap<string, number>): ElkNode {
+	const size = boxSize(box.label, box.detail);
+	return { id: box.id, ...size, width: widths.get(box.id) ?? size.width };
+}
+
+function elkGroup(group: SourceGroup, widths: ReadonlyMap<string, number>): ElkNode {
 	const minimumWidth = groupLabelWidth(group.label) + 2 * GROUP_PADDING;
 	return {
 		id: group.id,
-		children: group.boxes.map(elkBox),
+		children: group.boxes.map((box) => elkBox(box, widths)),
 		layoutOptions: {
 			'elk.padding': `[top=${GROUP_LABEL_BAND},left=${GROUP_PADDING},bottom=${GROUP_PADDING},right=${GROUP_PADDING}]`,
 			'elk.nodeSize.constraints': 'MINIMUM_SIZE',
@@ -66,6 +98,7 @@ function elkEdges(source: DiagramSource): ElkExtendedEdge[] {
 }
 
 function elkGraph(source: DiagramSource): ElkNode {
+	const widths = layerWidths(source);
 	return {
 		id: 'diagram',
 		layoutOptions: {
@@ -78,11 +111,13 @@ function elkGraph(source: DiagramSource): ElkNode {
 			'elk.padding': `[top=${CANVAS_MARGIN},left=${CANVAS_MARGIN},bottom=${CANVAS_MARGIN},right=${CANVAS_MARGIN}]`,
 			'elk.spacing.nodeNode': String(NODE_GAP),
 			'elk.layered.spacing.nodeNodeBetweenLayers': String(LAYER_GAP),
-			'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+			'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+			'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
+			'elk.layered.mergeEdges': 'false',
 			'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
 		},
 		children: source.members.map((member) =>
-			member.kind === 'group' ? elkGroup(member) : elkBox(member),
+			member.kind === 'group' ? elkGroup(member, widths) : elkBox(member, widths),
 		),
 		edges: elkEdges(source),
 	};
