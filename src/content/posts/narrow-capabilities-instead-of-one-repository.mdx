@@ -1,0 +1,215 @@
+---
+title: "Narrow capabilities instead of one repository"
+description: One port per need, the whole set kept for the composition root, a repository against a manager, absence at a port, filtering in the store, query languages and projections.
+published: 2026-10-10
+tags:
+  - architecture
+  - frontend
+  - typescript
+---
+
+Part of [How I structure a frontend](/posts/frontend-architecture-at-a-glance/). The examples use TypeScript and React. The ports and the root are in [Ports, adapters and the composition root](/posts/ports-adapters-and-the-composition-root/).
+
+## One port per need
+
+A card store can be one wide port or several narrow ones. Each narrow port is a capability: it names one thing a consumer can do.
+
+```diagram
+title "One wide port against narrow ports"
+direction right
+group wide "One repository port" tone warning {
+  everything "CardRepository" detail "get, search, count, save" tone warning
+}
+group narrow "Narrow ports" tone primary {
+  finder "CardFinder" detail "get" tone primary
+  searcher "CardSearcher" detail "search" tone primary
+  counter "CardCounter" detail "count" tone primary
+  saver "CardSaver" detail "save" tone primary
+}
+```
+
+A use case that only searches takes `CardSearcher`, so its fake has one method.
+
+```ts
+const cardSearcher: CardSearcher = {
+  search: async () => ({ items: [aCard()], next: null }),
+};
+
+const result = await searchCards(query, firstPage, { cardSearcher });
+```
+
+With the wide port the fake would also provide `get`, `count` and `save`, none of which the code under test calls. When the store gains a method, no fake of `CardSearcher` changes.
+
+| | Wide port | Narrow ports |
+| --- | --- | --- |
+| A use case depends on | every method | the methods it calls |
+| A fake provides | the whole set | one method |
+| A new store method | touches every fake | touches no existing fake |
+| Names to learn | one | one per need |
+
+## The whole set is for the root and the adapter
+
+The narrow ports still describe one store, so one type groups them. The adapter implements the group and the composition root holds it. A consumer asks for one port, and structural typing accepts the repository.
+
+```ts
+type CardRepository = CardFinder & CardSearcher & CardCounter & CardSaver;
+```
+
+```diagram
+title "The group is held at the root and consumed as a port"
+direction down
+adapter "HttpCardRepository" detail "implements CardRepository" tone accent
+root "Composition root" detail "holds the repository" tone warning
+page "Page" detail "reads the repository from the container" tone success
+data "CardsData" detail "takes a CardSearcher prop" tone primary
+adapter -> root "built by"
+root -> page "container"
+page -> data "the repository as a port"
+```
+
+```tsx
+function CardsPage() {
+  const { cardRepository } = useContainer().cards;
+
+  return <CardsData cardSearcher={cardRepository} query={defaultQuery}>{renderGrid}</CardsData>;
+}
+```
+
+The group type is never the type a use case takes. If it were, every use case would depend on every method again.
+
+## A repository and a manager are two types even when they match
+
+Notes have a finder, a lister, a saver and a remover. A notes panel reads and writes, so it needs all four. Taking four props is clumsy, so it takes a second type.
+
+```ts
+type NoteRepository = NoteFinder & NoteLister & NoteSaver & NoteRemover;
+
+type NoteManager = NoteFinder & NoteLister & NoteSaver & NoteRemover;
+```
+
+```diagram
+title "Two types with the same members today"
+direction down
+repo "NoteRepository" detail "what the store provides" tone accent
+manager "NoteManager" detail "what a notes panel needs" tone primary
+panel "NotesPanel" detail "takes a NoteManager" tone success
+repo -> manager "satisfies"
+manager -> panel "prop"
+```
+
+| | `NoteRepository` | `NoteManager` |
+| --- | --- | --- |
+| Describes | the store's operations for notes | what one consumer needs to manage notes |
+| Grows when | the store gains an operation | the consumer needs more |
+| Held by | the adapter and the root | a panel that reads and writes |
+
+The day the store gains a bulk write, the repository grows and the manager stays as it is. Merging the two because they match makes every panel depend on the bulk write.
+
+## Absence is a fact at a port and a variant at a use case
+
+At the port, "no card with this id" is one fact about the store, so `null` says all of it. The use case turns it into a variant the caller must handle. A store that broke is not a variant. It throws, as in [Expected and unexpected failures](/posts/expected-and-unexpected-failures/).
+
+```diagram
+title "The same absence at two layers"
+direction right
+store "Store" detail "no row for the id" tone neutral
+port "CardFinder" detail "returns null" tone primary
+usecase "findCard" detail "returns not-found" tone success
+store -> port
+port -> usecase "null"
+```
+
+```ts
+type FindCardResult =
+  | { type: 'success'; card: Card }
+  | { type: 'not-found' };
+
+async function findCard(
+  id: CardId,
+  { cardFinder }: FindCardCapabilities,
+  options?: ReadOptions,
+): Promise<FindCardResult> {
+  const card = await cardFinder.get(id, options);
+  return card ? { type: 'success', card } : { type: 'not-found' };
+}
+```
+
+## Filter, sort, page and count in the store
+
+The grid shows 30 cards a page. A filter for cards with art is added, and the quick version filters each page in memory.
+
+| Step | What happens |
+| --- | --- |
+| 1 | The store returns cards 1 to 30 and the total, 30. |
+| 2 | The filter keeps 12 of them, so the grid shows 12. |
+| 3 | The count still says 30, because it was never filtered. |
+| 4 | Each page shows a different number of cards, and a page where nothing matches shows an empty grid while later pages still hold matches. |
+
+Nothing throws. The screen is wrong.
+
+```diagram
+title "Where the filter runs"
+direction right
+group memory "In memory" tone warning {
+  fetch "Fetch a page" tone neutral
+  filter "Filter the page" tone warning
+}
+group store "In the store" tone success {
+  query "Query with the filter" tone primary
+  result "Page and count agree" tone success
+}
+fetch -> filter
+query -> result
+```
+
+So a narrower set extends the query type and the adapter, and the store filters, sorts, pages and counts.
+
+## The query language belongs to the owner, the dialects to the callers
+
+`CardQuery` belongs to `cards` because it describes cards. Two callers can build it differently.
+
+```ts
+type CardQuery = {
+  text?: string;
+  anyTags?: TagId[];
+  allTags?: TagId[];
+};
+
+const browsing = (picked: TagId[]): CardQuery => ({ anyTags: picked });
+
+const collectionPicker = (chosen: TagId[]): CardQuery => ({ allTags: chosen });
+```
+
+```diagram
+title "One language, two dialects"
+direction down
+language "CardQuery" detail "owned by the cards domain" tone primary
+browse "Browsing" detail "any of the picked tags" tone success
+picker "Collection picker" detail "all of the chosen tags" tone success
+browse -> language "builds"
+picker -> language "builds"
+```
+
+Merging the two builders because they return the same type changes one caller's results when the other changes.
+
+## A projection is its own type with its own port
+
+The grid draws a thumbnail, a name and a kind. A full `Card` has more.
+
+| Approach | What it costs |
+| --- | --- |
+| A flag on the full lister | one method returns two types, and every fake and caller handles both |
+| `Omit<Card, ...>` | the grid's type follows `Card`, so a new field reaches the grid unless someone omits it |
+| `CardSummary` and `CardSummaryLister` | one more type and port, and the adapter reads only the columns the grid draws |
+
+```ts
+type CardSummary = { id: CardId; name: string; kind: CardKind; thumbnailUrl: string };
+
+type CardSummaryLister = {
+  list(query: CardQuery, page: PageCursor, options?: ReadOptions): Promise<Page<CardSummary>>;
+};
+```
+
+## In short
+
+Narrow ports cost more names and give each consumer and each fake only what it uses. A wide port is one name and ties every consumer to every method. The group type, the manager and the projection are the places the narrow version needs a type of its own.
