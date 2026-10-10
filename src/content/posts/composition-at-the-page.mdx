@@ -45,9 +45,9 @@ function CardPage({ card }: { card: Card }) {
       card={card}
       extra={
         <>
-          <CardNotesData notes={notes} cardId={card.id} />
-          <OwnedCopiesData collection={collection} cardId={card.id} />
-          <CardTagsData tags={tags} cardId={card.id} />
+          <CardNotesData noteLister={notes.noteRepository} cardId={card.id} />
+          <OwnedCopiesData copyLister={collection.copyRepository} cardId={card.id} />
+          <CardTagsData tagLister={tags.tagRepository} cardId={card.id} />
         </>
       }
     />
@@ -57,25 +57,91 @@ function CardPage({ card }: { card: Card }) {
 
 ## When the slot is a function
 
-Sometimes only the panel has what the slot needs. Here the page has only the card's slug from the address. The panel loads the card, then calls the slot with its id.
+On the catalog page, a side pane shows either no card or the card the reader opened. The card id exists only in the branch that shows a card, so the slot takes it as an argument.
 
 ```tsx
+type ShownCard = { type: 'none' } | { type: 'card'; id: CardId };
+
 type CardDetailsPaneProps = {
-  cards: CardUseCases;
-  slug: CardSlug;
+  cardFinder: CardFinder;
+  shown: ShownCard;
   notesFor: (cardId: CardId) => ReactNode;
 };
 
-function CardDetailsPane({ cards, slug, notesFor }: CardDetailsPaneProps) {
+function CardDetailsPane({ cardFinder, shown, notesFor }: CardDetailsPaneProps) {
+  return match(shown)
+    .with({ type: 'none' }, () => <NoCardOpen />)
+    .with({ type: 'card' }, ({ id }) => (
+      <CardData cardFinder={cardFinder} id={id}>
+        {(card) => <CardDetails card={card} extra={notesFor(id)} />}
+      </CardData>
+    ))
+    .exhaustive();
+}
+```
+
+The page fills the slot with a function and hands each data component a repository from the container.
+
+```tsx
+function CatalogPage() {
+  const { cards, notes } = useContainer();
+  const opening = useCardOpening();
+
   return (
-    <CardData cards={cards} slug={slug}>
-      {(card) => <CardDetails card={card} extra={notesFor(card.id)} />}
-    </CardData>
+    <CardDetailsPane
+      cardFinder={cards.cardRepository}
+      shown={opening.shown}
+      notesFor={(cardId) => <CardNotesData noteLister={notes.noteRepository} cardId={cardId} />}
+    />
   );
 }
 ```
 
-The page passes `notesFor={(cardId) => <CardNotesData notes={notes} cardId={cardId} />}`. A plain node fits when the page has everything. A function fits when the value exists only inside the panel.
+A plain node fits when the page has everything. A function fits when the value exists only inside the panel.
+
+## Where the pane's card comes from
+
+`CardData` takes a port, `CardFinder`. Its query factory calls the `findCard` use case with that port, and the use case calls the port.
+
+```ts
+type CardFinder = {
+  get(id: CardId, options?: ReadOptions): Promise<Card | null>;
+};
+
+type FindCardResult = { type: 'success'; card: Card } | { type: 'not-found' };
+
+async function findCard(
+  id: CardId,
+  { cardFinder }: { cardFinder: CardFinder },
+  options?: ReadOptions,
+): Promise<FindCardResult> {
+  const card = await cardFinder.get(id, options);
+  return card ? { type: 'success', card } : { type: 'not-found' };
+}
+
+function cardQuery(id: CardId, capabilities: { cardFinder: CardFinder }) {
+  return queryOptions({
+    queryKey: cardKeys.detail(id),
+    queryFn: ({ signal }) => findCard(id, capabilities, { signal }),
+  });
+}
+```
+
+The composition root builds `HttpCardRepository`, which has `get` and more, and puts it in the container as `cards.cardRepository`. It satisfies `CardFinder`, so the page passes it straight in. `CardData` never learns which adapter it holds.
+
+```diagram
+title "From the page to the adapter"
+direction down
+page "Catalog page" detail "takes the repository from the container" tone warning
+data "Card data component" detail "takes a CardFinder" tone primary
+query "Card query factory" detail "calls the use case"
+usecase "findCard use case" detail "calls the port" tone primary
+adapter "HTTP card repository" detail "adapter, satisfies CardFinder" tone accent
+page -> data "cardFinder"
+data -> query "id and cardFinder"
+query -> usecase "on a cache miss"
+usecase -> adapter "get(id)"
+```
 
 ```diagram
 title "One panel, three domains in its slot"
@@ -99,8 +165,8 @@ tags -> panel "fills the slot"
 Each filler is a data component that owns its read, so a slow or failed read stays inside its own corner of the panel.
 
 ```tsx
-function CardNotesData({ notes, cardId }: CardNotesDataProps) {
-  const { state } = useReadState(cardNotesQuery(notes, cardId));
+function CardNotesData({ noteLister, cardId }: CardNotesDataProps) {
+  const { state } = useReadState(cardNotesQuery(cardId, { noteLister }));
 
   return match(state)
     .with({ type: 'loading' }, () => <Spinner />)
