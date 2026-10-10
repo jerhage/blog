@@ -1,0 +1,15 @@
+@layer features {
+	@scope (.line-break) {
+		.line-break-box {
+			width: var(--layout-list-width);
+			max-width: 100%;
+			padding: var(--sp-4);
+		}
+		.word-break-normal {
+			word-break: normal;
+		}
+		.word-break-keep-all {
+			word-break: keep-all;
+		}
+	}
+}
