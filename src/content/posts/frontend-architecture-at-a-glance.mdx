@@ -49,10 +49,12 @@ decks "decks" detail "non-leaf: deck builder" tone accent
 cards "cards" detail "leaf: search, detail" tone primary
 collection "collection" detail "leaf: owned cards" tone primary
 kernel "kernel" detail "shared types and tools"
+notes "notes" detail "leaf: notes on a card id" tone primary
 decks -> cards "imports"
 decks -> collection "imports"
 cards -> kernel
 collection -> kernel
+notes -> kernel
 decks -> kernel
 ```
 
@@ -84,32 +86,48 @@ const ContainerContext = createContext(container);
 const useContainer = () => useContext(ContainerContext);
 ```
 
-A page is thin. It takes the container and puts domains side by side. When one domain's screen needs a piece of another, the page passes it in through a render prop, so neither domain imports the other's UI.
+A page is thin. It takes the container and puts domains side by side. The card details panel in `cards` knows nothing about notes. It offers a slot, a prop that is a function returning UI, and draws whatever it gets.
 
 ```tsx
-function DeckBuilderPage() {
-  const { cards, decks } = useContainer();
+function CardDetails({ card, extra }: { card: Card; extra: (card: Card) => ReactNode }) {
+  return (
+    <article>
+      <CardFace card={card} />
+      {extra(card)}
+    </article>
+  );
+}
+```
+
+The card page is the one place that knows both domains. It fills the slot with the notes component.
+
+```tsx
+function CardPage({ card }: { card: Card }) {
+  const { notes } = useContainer();
 
   return (
-    <DeckBuilder decks={decks}>
-      {(addCard) => <CardSearch cards={cards} onPick={addCard} />}
-    </DeckBuilder>
+    <CardDetails
+      card={card}
+      extra={(card) => <CardNotesData notes={notes} cardId={card.id} />}
+    />
   );
 }
 ```
 
 ```diagram
-title "The deck builder page composes two domains"
+title "The card page fills the slot"
 direction down
-page "Deck builder page" detail "composes" tone warning
-builder "Deck builder" detail "decks UI" tone accent
-picker "Card search" detail "cards UI, in a slot" tone primary
+page "Card page" detail "knows both domains" tone warning
+panel "Card details panel" detail "cards UI, has a slot" tone primary
+notes "Card notes component" detail "notes UI" tone accent
 root "Composition root" detail "adapters to use cases"
 root -> page "container"
-page -> builder
-page -> picker
-picker -> builder "card picked"
+page -> panel "renders"
+page -> notes "builds"
+notes -> panel "fills the slot"
 ```
+
+`cards` has no edge to `notes`. Only the page imports both.
 
 ## 4. Three kinds of UI parts
 
@@ -225,3 +243,4 @@ Each idea gets its own post:
 - [The domain graph in practice](/posts/the-domain-graph-in-practice/)
 - [Use cases and their named results](/posts/use-cases-and-their-named-results/)
 - [Queries and caching](/posts/queries-and-caching/)
+- [Composition at the page](/posts/composition-at-the-page/)
